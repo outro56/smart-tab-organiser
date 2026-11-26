@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'local-model-picker.js'), 'utf8');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'local-model-picker.js'), 'utf8');
 const ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
 const ADDRESS = 'http://localhost:11434';
 

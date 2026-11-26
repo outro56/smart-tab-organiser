@@ -8,7 +8,7 @@ const test = require('node:test');
 const { TextEncoder } = require('node:util');
 const vm = require('node:vm');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'options.js'), 'utf8');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'options.js'), 'utf8');
 const START = SOURCE.indexOf('  async function refreshCloudModelList(');
 const END = SOURCE.indexOf('\n  for (const control of cloudModelControls)', START);
 assert.ok(START >= 0 && END > START, 'refreshCloudModelList extraction boundaries must exist');

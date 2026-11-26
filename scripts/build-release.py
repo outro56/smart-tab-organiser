@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import NoReturn, cast, final
 
 ROOT = Path(__file__).resolve().parent.parent
+EXTENSION = ROOT / "extension"
 DIST = ROOT / "dist"
 
 PACKAGE_FILES = (
@@ -109,7 +110,7 @@ def png_dimensions(path: Path) -> tuple[int, int]:
 
 
 def validate_manifest() -> tuple[dict[str, object], str]:
-    manifest_path = ROOT / "manifest.json"
+    manifest_path = EXTENSION / "manifest.json"
     parsed: object
     try:
         parsed = cast(object, json.loads(manifest_path.read_text(encoding="utf-8")))
@@ -146,23 +147,29 @@ def make_firefox_manifest(manifest: dict[str, object]) -> dict[str, object]:
     return firefox
 
 
+def package_source(relative_path: str) -> Path:
+    if relative_path in ("PRIVACY_POLICY.md", "LICENSE"):
+        return ROOT / relative_path
+    return EXTENSION / relative_path
+
+
 def validate_files() -> None:
     for relative_path in PACKAGE_FILES:
-        path = ROOT / relative_path
+        path = package_source(relative_path)
         if not path.is_file():
             fail(f"required file is missing: {relative_path}")
         if path.is_symlink():
             fail(f"package files must not be symbolic links: {relative_path}")
 
     for relative_path, expected in ICON_SIZES.items():
-        actual = png_dimensions(ROOT / relative_path)
+        actual = png_dimensions(EXTENSION / relative_path)
         if actual != expected:
             fail(f"{relative_path} is {actual[0]}x{actual[1]}; expected {expected[0]}x{expected[1]}")
 
 
 def validate_html() -> None:
     for relative_path in ("options.html",):
-        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        text = (EXTENSION / relative_path).read_text(encoding="utf-8")
         validator = StrictHTMLValidator(relative_path)
         validator.feed(text)
         validator.close()
@@ -171,31 +178,31 @@ def validate_html() -> None:
 
 def validate_remote_code() -> None:
     for relative_path in ("options.html",):
-        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        text = (EXTENSION / relative_path).read_text(encoding="utf-8")
         for pattern in REMOTE_EXECUTABLE_PATTERNS:
             if pattern.search(text):
                 fail(f"remote script or stylesheet found in {relative_path}")
 
-    css = (ROOT / "options.css").read_text(encoding="utf-8")
+    css = (EXTENSION / "options.css").read_text(encoding="utf-8")
     if re.search(r"@import\s+(?:url\()?\s*[\"']?https?://", css, re.IGNORECASE):
         fail("remote CSS import found in options.css")
 
     for relative_path in ("background.js", "ai-models.js", "host-access.js", "options.js"):
-        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        text = (EXTENSION / relative_path).read_text(encoding="utf-8")
         for pattern in REMOTE_JAVASCRIPT_PATTERNS:
             if pattern.search(text):
                 fail(f"disallowed remote-code pattern found in {relative_path}: {pattern.pattern}")
 
 
 def build_browser(browser: str, filename: str, manifest: dict[str, object]) -> Path:
-    packages = DIST / "packages"
+    packages = DIST / browser
     packages.mkdir(parents=True, exist_ok=True)
     output = packages / filename
 
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         archive.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
         for relative_path in PACKAGE_FILES[1:]:
-            archive.write(ROOT / relative_path, arcname=relative_path)
+            archive.write(package_source(relative_path), arcname=relative_path)
 
     with zipfile.ZipFile(output) as archive:
         names = tuple(archive.namelist())
@@ -206,10 +213,7 @@ def build_browser(browser: str, filename: str, manifest: dict[str, object]) -> P
         bad = archive.testzip()
         if bad:
             fail(f"the ZIP contains a corrupt file: {bad}")
-        unpacked = DIST / browser
-        archive.extractall(unpacked, members=PACKAGE_FILES)
 
-    print(f"Prepared {unpacked.relative_to(ROOT)}/ for local browser loading.")
     return output
 
 

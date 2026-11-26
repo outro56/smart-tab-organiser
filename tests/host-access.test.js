@@ -7,7 +7,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const HOST_ACCESS_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'host-access.js'),
+  path.join(__dirname, '..', 'extension', 'host-access.js'),
   'utf8'
 );
 

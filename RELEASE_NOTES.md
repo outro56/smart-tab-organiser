@@ -17,7 +17,7 @@
 ### Changed
 
 - Put everyday grouping controls on one screen. AI models, pinned tabs, and GitHub settings have their own views.
-- The build creates separate loadable folders for Chrome and Firefox, with ZIPs in `dist/packages/`.
+- Chrome loads the shared source from `extension/`. The build writes separate Chrome and Firefox ZIPs under `dist/`.
 - Configured settings now control label-group colours. GitHub label colours no longer control them.
 - Managed groups now appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.
 - Default label colours avoid the BOOKMARKS, PRs, and Closed colours until the available palette is full.

@@ -1,12 +1,9 @@
 #!/bin/sh
 set -eu
 
-node --check background.js
-node --check ai-models.js
-node --check cloud-model-discovery.js
-node --check local-model-picker.js
-node --check host-access.js
-node --check options.js
+for source in extension/*.js; do
+  node --check "$source"
+done
 node --test tests/*.test.js
 python3 scripts/validate-store-assets.py
 python3 scripts/build-release.py

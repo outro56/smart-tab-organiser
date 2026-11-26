@@ -7,15 +7,15 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const BACKGROUND_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'background.js'),
+  path.join(__dirname, '..', 'extension', 'background.js'),
   'utf8'
 );
 
 const HOST_ACCESS_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'host-access.js'),
+  path.join(__dirname, '..', 'extension', 'host-access.js'),
   'utf8'
 );
-const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'ai-models.js'), 'utf8');
+const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'ai-models.js'), 'utf8');
 
 function eventStub() {
   const listeners = [];
@@ -666,7 +666,7 @@ test('Chrome built-in AI remains configured without an API key', async () => {
 
 test('custom OpenAI optional host access covers HTTPS everywhere and HTTP on request', () => {
   const manifest = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', 'manifest.json'),
+    path.join(__dirname, '..', 'extension', 'manifest.json'),
     'utf8'
   ));
 

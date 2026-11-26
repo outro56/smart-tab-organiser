@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'ai-models.js'), 'utf8');
+const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'ai-models.js'), 'utf8');
 
 function loadModelCatalog() {
   const context = {

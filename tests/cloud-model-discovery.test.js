@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'cloud-model-discovery.js'), 'utf8');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'cloud-model-discovery.js'), 'utf8');
 const KEY = 'secret-api-key';
 
 function load(pages, overrides = {}) {

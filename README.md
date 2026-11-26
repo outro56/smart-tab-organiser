@@ -4,14 +4,14 @@ Group open tabs by topic in Chrome, Edge, and Firefox. Use an AI model on your c
 
 ## Install
 
-From the repository root, run `python3 scripts/build-release.py`.
+Use the browser-specific path below. Build the Firefox ZIP with `python3 scripts/build-release.py` from the repository root.
 
 | Browser | Installation |
 | --- | --- |
-| Chrome or Edge | Open `chrome://extensions` or `edge://extensions`, enable **Developer mode**, and **Load unpacked** from `dist/chrome/`. |
-| Firefox desktop 139+ | Open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose `dist/firefox/manifest.json`. |
+| Chrome or Edge | Open `chrome://extensions` or `edge://extensions`, enable **Developer mode**, and **Load unpacked** from `extension/`. |
+| Firefox desktop 139+ | Open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose the ZIP in `dist/firefox/`. |
 
-Rebuild after editing the source, then select **Reload** on the extension card. Firefox removes the temporary add-on on restart. Permanent Firefox installs need [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). Find both ZIPs in `dist/packages/`.
+After editing `extension/`, reload the Chrome or Edge extension. For Firefox, rebuild the ZIP and reload the temporary add-on. Firefox removes the temporary add-on on restart. Permanent Firefox installs need [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). The build writes browser ZIPs to `dist/chrome/` and `dist/firefox/`.
 
 ## Set up grouping
 
@@ -31,6 +31,6 @@ In **Grouping rules and toolbar behaviour**, set excluded sites, choose how to h
 
 ## Develop
 
-Chrome and Firefox share the settings UI and grouping code. The build gives each browser its own manifest. Run `sh scripts/validate.sh` with Node.js and Python 3 to run the tests, validate the store assets, and rebuild both outputs.
+All runtime files live in `extension/`. The build packages those files with a browser-specific manifest. Run `sh scripts/validate.sh` with Node.js and Python 3 to run the tests, validate the store assets, and rebuild both outputs.
 
 [Release notes](RELEASE_NOTES.md) · [MIT license](LICENSE) · [Original project](https://github.com/twisterdotcom/smart-tab-organiser)
