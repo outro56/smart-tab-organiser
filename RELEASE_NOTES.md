@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added a **Close duplicate tabs** setting. Turn it off to keep duplicates open during automatic grouping and other tab actions.
+- Added a Firefox desktop build with support for local model servers.
+- Set the Firefox local AI defaults to oMLX and Qwen2.5 Coder.
 - Added a toolbar-click setting for GitHub label-group sync.
 - Added Chrome colour selectors for each configured GitHub label and the PRs group.
 - Allowed plain HTTP to private-network hosts (`10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, IPv6 `fc00::/7` and `fe80::/10`) for both the local model server and a custom OpenAI-compatible host. Each such host still needs its own host access, requested once from Options or when organization starts from the toolbar.
@@ -13,6 +16,8 @@
 
 ### Changed
 
+- Put everyday grouping controls on one screen. AI models, pinned tabs, and GitHub settings have their own views.
+- The build creates separate loadable folders for Chrome and Firefox, with ZIPs in `dist/packages/`.
 - Configured settings now control label-group colours. GitHub label colours no longer control them.
 - Managed groups now appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.
 - Default label colours avoid the BOOKMARKS, PRs, and Closed colours until the available palette is full.

@@ -1,17 +1,49 @@
 // Options page script
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Scroll to custom instructions when the URL includes its section hash.
-  if (window.location.hash === '#custom-instructions') {
-    const el = document.getElementById('custom-instructions');
-    if (el) el.scrollIntoView();
+  const navigation = document.querySelectorAll('.settings-nav a');
+  const views = document.querySelectorAll('[data-settings-view]');
+  const actionStatus = document.getElementById('actionStatus');
+  const actionMenu = document.querySelector('.action-menu');
+  const actionMenuSummary = actionMenu.querySelector('summary');
+
+  actionMenu.addEventListener('click', event => {
+    if (!event.target.closest('button')) return;
+    actionMenu.open = false;
+    actionMenuSummary.focus();
+  });
+  actionMenu.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !actionMenu.open) return;
+    actionMenu.open = false;
+    actionMenuSummary.focus();
+  });
+
+  function showSettingsView() {
+    const target = document.getElementById(window.location.hash.slice(1));
+    const activeView = target?.closest('[data-settings-view]') || views[0];
+    actionMenu.open = false;
+    views.forEach(view => { view.hidden = view !== activeView; });
+    navigation.forEach(link => {
+      if (link.hash === `#${activeView.id}`) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    actionStatus.textContent = '';
+    if (target && target !== activeView && activeView.contains(target)) {
+      const details = target.closest('details');
+      if (details) details.open = true;
+      target.scrollIntoView();
+    } else {
+      window.scrollTo(0, 0);
+    }
   }
+  window.addEventListener('hashchange', showSettingsView);
+  showSettingsView();
   const ignoreQueryCheckbox = document.getElementById('ignoreQuery');
+  const closeDuplicateTabsCheckbox = document.getElementById('closeDuplicateTabs');
   const ignoreHashCheckbox = document.getElementById('ignoreHash');
   const reloadTabsCheckbox = document.getElementById('reloadTabs');
   const testBtn = document.getElementById('testBtn');
   const reloadAllBtn = document.getElementById('reloadAllBtn');
-  const actionStatus = document.getElementById('actionStatus');
   const openaiKeyInput = document.getElementById('openaiKey');
   const claudeKeyInput = document.getElementById('claudeKey');
   const geminiKeyInput = document.getElementById('geminiKey');
@@ -41,7 +73,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cloudFallbackRow = document.getElementById('cloudFallbackRow');
   const fallbackOrderItem = document.getElementById('fallbackOrderItem');
   const fallbackOrderList = document.getElementById('fallbackOrderList');
-  const cloudProviderGrid = document.getElementById('cloudProviderGrid');
+  const selectedProvider = document.getElementById('selectedProvider');
+  const otherProviders = document.getElementById('otherProviders');
   const providerCards = document.querySelectorAll('.provider-card[data-provider]');
 
   function updateModelRecommendedHint(provider, hintEl, selectEl) {
@@ -143,6 +176,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
   const autoOrganizeEnabledCheckbox = document.getElementById('autoOrganizeEnabled');
   const autoOrganizeDelayInput = document.getElementById('autoOrganizeDelay');
+  const autoOrganizeDelayRow = document.getElementById('autoOrganizeDelayRow');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
   const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
@@ -379,7 +413,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load saved settings
   const settings = await chrome.storage.local.get([
-    'ignoreQuery', 'ignoreHash', 'reloadTabs',
+    'closeDuplicateTabs', 'ignoreQuery', 'ignoreHash', 'reloadTabs',
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'excludedDomains', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
@@ -390,6 +424,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'customOpenaiBaseUrl', 'customOpenaiKey', 'customOpenaiModel'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
+  closeDuplicateTabsCheckbox.checked = settings.closeDuplicateTabs !== false;
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
   reloadTabsCheckbox.checked = settings.reloadTabs === true;
   
@@ -403,7 +438,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.geminiKey) {
     geminiKeyInput.value = settings.geminiKey;
   }
-  aiProviderSelect.value = settings.aiProvider || 'openai';
+  const isFirefox = window.location.protocol === 'moz-extension:';
+  if (isFirefox) {
+    aiProviderSelect.querySelector('option[value="chrome-ai"]').remove();
+    document.querySelector('.provider-card[data-provider="chrome-ai"]').remove();
+  }
+  const preferredProvider = settings.aiProvider || (isFirefox ? 'local' : 'openai');
+  aiProviderSelect.value = isFirefox && preferredProvider === 'chrome-ai' ? 'local' : preferredProvider;
   aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled === true; // explicit opt-in
   aiAllowCloudFallbackCheckbox.checked = settings.aiAllowCloudFallback === true; // default off — explicit opt-in
   const openaiResolved = globalThis.populateModelSelect(openaiModelSelect, 'openai', settings.openaiModel);
@@ -411,6 +452,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const geminiResolved = globalThis.populateModelSelect(geminiModelSelect, 'gemini', settings.geminiModel);
   localBaseUrlInput.value = settings.localBaseUrl || '';
   localModelInput.value = settings.localModel || '';
+  localBaseUrlInput.placeholder = globalThis.resolveLocalModelSettings({}, isFirefox).baseUrl;
+  updateLocalModelPlaceholder();
   customOpenaiBaseUrlInput.value = settings.customOpenaiBaseUrl || '';
   customOpenaiKeyInput.value = settings.customOpenaiKey || '';
   customOpenaiModelInput.value = settings.customOpenaiModel || '';
@@ -443,6 +486,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   sortTabsWithinGroupsByTitleCheckbox.checked = settings.sortTabsWithinGroupsByTitle === true;
   organizeOnClickCheckbox.checked = settings.organizeOnClick === true;
   autoOrganizeEnabledCheckbox.checked = settings.autoOrganizeEnabled === true;
+  autoOrganizeDelayRow.hidden = !autoOrganizeEnabledCheckbox.checked;
   autoOrganizeDelayInput.value = settings.autoOrganizeDelay !== undefined ? Number(settings.autoOrganizeDelay) : 5;
   if (Array.isArray(settings.pinnedUrls)) {
     pinnedUrlsTextarea.value = settings.pinnedUrls.join('\n');
@@ -470,6 +514,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   await syncGitHubLabelGroupColors(loadedGitHubLabelGroupNames);
 
   // Save settings when changed
+  closeDuplicateTabsCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ closeDuplicateTabs: closeDuplicateTabsCheckbox.checked });
+  });
+
   ignoreQueryCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ ignoreQuery: ignoreQueryCheckbox.checked });
     chrome.runtime.sendMessage({ action: 'updateBadge' });
@@ -605,25 +653,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
 
   function updateActiveProviderCard() {
-    const primary = aiProviderSelect.value || 'openai';
-    const isCloudPrimary = !LOCAL_PROVIDERS_OPTIONS.includes(primary);
-    const fallbackOn = aiFallbackEnabledCheckbox.checked;
-    providerCards.forEach((card) => {
-      const isSelected = card.dataset.provider === primary;
+    providerCards.forEach(card => {
+      if (!card.isConnected) return;
+      const isSelected = card.dataset.provider === aiProviderSelect.value;
       card.classList.toggle('provider-card--active', isSelected);
-      // Local provider cards always stay visible. Cloud cards stay visible whenever
-      // fallback is enabled so users can configure eligible cloud fallbacks.
-      const isCloud = !card.closest('.provider-grid--two');
-      const hideCloudCard = isCloud && isCloudPrimary && !fallbackOn && !isSelected;
-      card.hidden = hideCloudCard;
+      const container = isSelected ? selectedProvider : otherProviders;
+      if (card.parentElement !== container) container.append(card);
     });
-
-    const visibleCloudCards = Array.from(providerCards)
-      .filter((card) => !card.closest('.provider-grid--two') && !card.hidden)
-      .length;
-    if (cloudProviderGrid) {
-      cloudProviderGrid.classList.toggle('provider-grid--compact', visibleCloudCards <= 1);
-    }
   }
 
   // The cloud opt-in only applies to a local primary, and the order list
@@ -793,7 +829,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   refreshProviderUi();
 
+  function updateLocalModelPlaceholder() {
+    const { model } = globalThis.resolveLocalModelSettings({ localBaseUrl: localBaseUrlInput.value }, isFirefox);
+    localModelInput.placeholder = model ? `Default: ${model}` : 'Select or enter a model name';
+  }
+
   localBaseUrlInput.addEventListener('input', () => {
+    updateLocalModelPlaceholder();
     chrome.storage.local.set({ localBaseUrl: localBaseUrlInput.value.trim() });
     scheduleFallbackUiRefresh(); // the chain shows this host's access state
   });
@@ -962,7 +1004,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Check availability up front: loudly (status box) when Chrome AI is the primary,
   // silently otherwise — the fallback hint needs the state either way.
-  checkChromeAi({ silent: aiProviderSelect.value !== 'chrome-ai' });
+  if (!isFirefox) checkChromeAi({ silent: aiProviderSelect.value !== 'chrome-ai' });
 
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });
@@ -1030,6 +1072,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   autoOrganizeEnabledCheckbox.addEventListener('change', () => {
+    autoOrganizeDelayRow.hidden = !autoOrganizeEnabledCheckbox.checked;
     chrome.storage.local.set({ autoOrganizeEnabled: autoOrganizeEnabledCheckbox.checked });
   });
 
@@ -1228,8 +1271,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       // that can actually run in this chain are asked, so no stray dialog.
       const primaryProvider = aiProviderSelect.value || 'openai';
       const fallbackOn = aiFallbackEnabledCheckbox.checked;
+      const { model: localModel } = globalThis.resolveLocalModelSettings({
+        localBaseUrl: localBaseUrlInput.value, localModel: localModelInput.value,
+      }, isFirefox);
       const localEligible = LOCAL_PROVIDERS_OPTIONS.includes(primaryProvider)
-        && !!localModelInput.value.trim()
+        && !!localModel
         && (primaryProvider === 'local' || fallbackOn);
       const customEligible = !!customOpenaiBaseUrlInput.value.trim()
         && !!customOpenaiModelInput.value.trim()
@@ -1272,7 +1318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Deduplicate and tidy pinned tabs button
   tidyPinnedBtn.addEventListener('click', async () => {
     tidyPinnedBtn.disabled = true;
-    actionStatus.textContent = 'Deduplicating and tidying pinned tabs...';
+    actionStatus.textContent = 'Tidying pinned tabs...';
     actionStatus.className = 'status info';
 
     try {

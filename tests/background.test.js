@@ -15,6 +15,7 @@ const HOST_ACCESS_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'host-access.js'),
   'utf8'
 );
+const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'ai-models.js'), 'utf8');
 
 function eventStub() {
   const listeners = [];
@@ -48,7 +49,7 @@ function makeSseResponse(chunks) {
   };
 }
 
-function loadBackground() {
+function loadBackground(extensionOrigin = 'chrome-extension://test') {
   const chrome = {
     action: {
       onClicked: eventStub(),
@@ -78,7 +79,7 @@ function loadBackground() {
       request: async () => true,
     },
     runtime: {
-      getURL: (relativePath) => `chrome-extension://test/${relativePath}`,
+      getURL: (relativePath) => `${extensionOrigin}/${relativePath}`,
       onInstalled: eventStub(),
       onMessage: eventStub(),
       openOptionsPage: async () => {},
@@ -133,7 +134,6 @@ function loadBackground() {
       throw new Error('Unexpected fetch');
     },
     importScripts() {},
-    resolveStoredModel: (_provider, model) => model || 'test-model',
     setInterval,
     setTimeout,
     TextDecoder,
@@ -143,7 +143,9 @@ function loadBackground() {
   context.self = context;
 
   vm.createContext(context);
-  // importScripts is stubbed above, so load the shared policy the worker needs.
+  // importScripts is stubbed above, so load the shared scripts the worker needs.
+  vm.runInContext(MODEL_SOURCE, context, { filename: 'ai-models.js' });
+  context.resolveStoredModel = (_provider, model) => model || 'test-model';
   vm.runInContext(HOST_ACCESS_SOURCE, context, { filename: 'host-access.js' });
   vm.runInContext(BACKGROUND_SOURCE, context, { filename: 'background.js' });
   return { chrome, context };
@@ -2009,6 +2011,71 @@ function setupAutoOrganize(settings) {
   };
   return { chrome, context, state, windowTabs, flush, activeTimers, fireTimers };
 }
+
+test('automatic grouping keeps two identical URLs open when duplicate closing is off', async () => {
+  const { chrome, context } = loadBackground();
+  const tabs = [11, 12].map(id => ({
+    id, windowId: 1, groupId: -1, url: 'https://example.com/docs', title: 'Docs',
+  }));
+  const groups = [];
+  let modelRequests = 0;
+  chrome.storage.local.get = async () => ({
+    autoOrganizeEnabled: true,
+    closeDuplicateTabs: false,
+    aiProvider: 'local',
+    localModel: 'test-model',
+    localBaseUrl: 'http://127.0.0.1:11434',
+  });
+  chrome.tabs.query = async () => tabs.map(tab => ({ ...tab }));
+  chrome.tabs.get = async id => ({ ...tabs.find(tab => tab.id === id) });
+  chrome.tabs.remove = async id => tabs.splice(tabs.findIndex(tab => tab.id === id), 1);
+  chrome.tabs.group = async ({ tabIds }) => {
+    for (const tab of tabs) if (tabIds.includes(tab.id)) tab.groupId = 17;
+    return 17;
+  };
+  chrome.tabGroups.update = async (id, { title }) => groups.push({ id, title });
+  context.fetch = async (url, options) => {
+    assert.equal(url, 'http://127.0.0.1:11434/v1/chat/completions');
+    assert.equal(options.redirect, 'error');
+    modelRequests++;
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ choices: [{ message: { content: '[{"groupName":"Docs","tabIndices":[1,2]}]' } }] }),
+    };
+  };
+
+  await context.executeAutoOrganize(1);
+
+  assert.equal(modelRequests, 1);
+  assert.deepEqual(groups, [{ id: 17, title: 'Docs' }]);
+  assert.deepEqual(tabs.map(({ id, groupId }) => [id, groupId]), [[11, 17], [12, 17]]);
+});
+
+test('Firefox sends a local AI request to oMLX with Qwen Coder when both settings are blank', async () => {
+  const { context } = loadBackground('moz-extension://test');
+  const requests = [];
+  context.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push({ url, model: body.model, format: body.response_format?.type });
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ choices: [{ message: { content: '[{"groupName":"Docs","tabIndices":[1,2]}]' } }] }),
+    };
+  };
+  const chooser = await context.describeProviderChain({});
+  const [status] = await context.computeProviderStatuses(chooser.chain, {});
+  assert.equal(status.status, 'ready');
+
+  await context.callProvider(chooser.primary, {}, [], '', null, 1);
+
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:8000/v1/chat/completions',
+    model: 'Qwen2.5-Coder-1.5B-4bit',
+    format: 'json_schema',
+  }]);
+});
 
 test('auto-organize does nothing when the setting was never enabled', async () => {
   const world = setupAutoOrganize({});

@@ -6,6 +6,25 @@
 (function (g) {
   'use strict';
 
+  const OMLX_BASE_URL = 'http://127.0.0.1:8000/v1';
+  const OMLX_MODEL_ID = 'Qwen2.5-Coder-1.5B-4bit';
+  const OLLAMA_BASE_URL = 'http://localhost:11434/v1';
+
+  /** Resolve the local endpoint and model without overwriting saved choices. */
+  g.resolveLocalModelSettings = function (settings, isFirefox) {
+    let baseUrl = settings.localBaseUrl?.trim() || (isFirefox ? OMLX_BASE_URL : OLLAMA_BASE_URL);
+    if (!/^https?:\/\//i.test(baseUrl)) baseUrl = `http://${baseUrl}`;
+    baseUrl = baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+    if (!/\/v\d+$/.test(baseUrl)) baseUrl = `${baseUrl}/v1`;
+
+    const isOmlx = baseUrl === OMLX_BASE_URL || baseUrl === 'http://localhost:8000/v1';
+    return {
+      baseUrl,
+      model: settings.localModel?.trim() || (isFirefox && isOmlx ? OMLX_MODEL_ID : ''),
+      isOmlx,
+    };
+  };
+
   /** @type {Record<string, { recommended: string, models: Array<{ id: string, label: string, description?: string }> }>} */
   var CATALOG = {
     openai: {

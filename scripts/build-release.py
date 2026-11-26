@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate the Chrome Web Store upload package."""
+"""Build and validate the Chrome and Firefox extension packages."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def png_dimensions(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
-def validate_manifest() -> str:
+def validate_manifest() -> tuple[dict[str, object], str]:
     manifest_path = ROOT / "manifest.json"
     parsed: object
     try:
@@ -126,7 +126,24 @@ def validate_manifest() -> str:
     if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){0,3}", version):
         fail(f"manifest version is invalid: {version!r}")
 
-    return version
+    return manifest, version
+
+
+def make_firefox_manifest(manifest: dict[str, object]) -> dict[str, object]:
+    firefox = manifest.copy()
+    firefox["options_ui"] = {"page": firefox.pop("options_page"), "open_in_tab": True}
+    firefox["background"] = {"scripts": ["ai-models.js", "host-access.js", "background.js"]}
+    firefox["browser_specific_settings"] = {
+        "gecko": {
+            "id": "smart-tab-organiser@outro56",
+            "strict_min_version": "139.0",
+            "data_collection_permissions": {
+                "required": ["none"],
+                "optional": ["authenticationInfo", "browsingActivity"],
+            },
+        },
+    }
+    return firefox
 
 
 def validate_files() -> None:
@@ -170,12 +187,14 @@ def validate_remote_code() -> None:
                 fail(f"disallowed remote-code pattern found in {relative_path}: {pattern.pattern}")
 
 
-def build_zip(version: str) -> Path:
-    DIST.mkdir(exist_ok=True)
-    output = DIST / f"smart-tab-organiser-v{version}.zip"
+def build_browser(browser: str, filename: str, manifest: dict[str, object]) -> Path:
+    packages = DIST / "packages"
+    packages.mkdir(parents=True, exist_ok=True)
+    output = packages / filename
 
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for relative_path in PACKAGE_FILES:
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
+        for relative_path in PACKAGE_FILES[1:]:
             archive.write(ROOT / relative_path, arcname=relative_path)
 
     with zipfile.ZipFile(output) as archive:
@@ -187,18 +206,23 @@ def build_zip(version: str) -> Path:
         bad = archive.testzip()
         if bad:
             fail(f"the ZIP contains a corrupt file: {bad}")
+        unpacked = DIST / browser
+        archive.extractall(unpacked, members=PACKAGE_FILES)
 
+    print(f"Prepared {unpacked.relative_to(ROOT)}/ for local browser loading.")
     return output
 
 
 def main() -> None:
-    version = validate_manifest()
+    manifest, version = validate_manifest()
     validate_files()
     validate_html()
     validate_remote_code()
-    output = build_zip(version)
-    size_kib = output.stat().st_size / 1024
-    print(f"Created {output.relative_to(ROOT)} ({size_kib:.1f} KiB)")
+    chrome = build_browser("chrome", f"smart-tab-organiser-v{version}.zip", manifest)
+    firefox = build_browser("firefox", f"smart-tab-organiser-firefox-v{version}.zip", make_firefox_manifest(manifest))
+    for output in (chrome, firefox):
+        size_kib = output.stat().st_size / 1024
+        print(f"Created {output.relative_to(ROOT)} ({size_kib:.1f} KiB)")
     print("Validated Manifest V3, HTML structure, icon sizes, package contents, and common remote-code patterns.")
 
 

@@ -1,279 +1,36 @@
 # Smart Tab Organiser
 
-A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, maintains optional **GitHub tab groups**, and **organizes tabs with AI**. Duplicate handling can keep the tab with the highest anchor number, such as the latest GitHub issue comment.
+Group open tabs by topic in Chrome, Edge, and Firefox. Use an AI model on your computer or a provider you choose.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-coming%20soon-lightgrey)](https://chromewebstore.google.com/)
+## Install
 
-## Privacy
+From the repository root, run `python3 scripts/build-release.py`.
 
-- **Local storage**: Settings and optional credentials use `chrome.storage.local`. A credential goes only to its issuing service when you use that feature.
-- **No analytics**: No telemetry or tracking from this extension.
-- **Local AI options**: Chrome built-in AI processes prompts on your computer. The local model provider sends prompts only to a server on your computer or your own local network.
-- **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a provider and use the applicable feature. Settings also requests model lists for saved cloud keys. These requests contain no tab data.
-- **Custom OpenAI-compatible hosts**: The extension requests host access for a custom host only when you test or use that host. Remote custom hosts must use HTTPS. Plain HTTP is allowed only for loopback hosts and private-network addresses (for example `192.168.1.20`). Shared address space (`100.64.0.0/10`) is excluded because an ISP may route it beyond your network.
-- [Privacy Policy](PRIVACY_POLICY.md)
-- [Release notes](RELEASE_NOTES.md)
+| Browser | Installation |
+| --- | --- |
+| Chrome or Edge | Open `chrome://extensions` or `edge://extensions`, enable **Developer mode**, and **Load unpacked** from `dist/chrome/`. |
+| Firefox desktop 139+ | Open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose `dist/firefox/manifest.json`. |
 
-## Key features
+Rebuild after editing the source, then select **Reload** on the extension card. Firefox removes the temporary add-on on restart. Permanent Firefox installs need [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). Find both ZIPs in `dist/packages/`.
 
-- **AI tab organization**: Group tabs with OpenAI, Anthropic, Google, Chrome built-in AI, a custom OpenAI-compatible host, or a local model server. Cloud providers usually use an API key. Provider fallback is opt-in.
-- **Automatic organization** (optional): Automatically organize tabs after opening a new tab, with configurable delay (1-60 seconds). Disabled by default to avoid unexpected AI calls and costs.
-- **Never-organize domains**: List domains such as `youtube.com` that AI organization must skip. Matching tabs and their subdomains are never sent to AI and stay in their current group.
-- **Refine existing groups** (optional): Keep your groups and move only tabs that clearly belong elsewhere. Groups are never renamed, and small groups are not broken up.
-- **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
-- **BOOKMARKS and pinned URLs**: Pin, unpin, and order tabs from a list. Choose the BOOKMARKS group colour; the default is yellow.
-- **PRs** (optional): Maintain a group for open pull requests and review requests, and choose its colour. The default is blue. Stale PR tabs leave the group but remain open.
-- **Configured GitHub labels** (optional): Group issue tabs from an ordered list of exact label names. Matching ignores letter case, and the first match wins. Each label has a Chrome group colour. You can disable label sync on toolbar clicks without disabling manual refresh.
-- **Closed issues** (optional): Move closed issue tabs to **Closed**. Closed takes priority over configured labels. The extension does not change pinned or split-view tabs.
-- **Toolbar, context menu, and shortcut**: Left-click the icon, use its menu, or assign a shortcut at `chrome://extensions/shortcuts`.
+## Set up grouping
 
-## Cloud model updates
+1. Open **Options → AI models** and choose a provider.
+2. In **Grouping**, select **Organize tabs now** or turn on **Group new tabs automatically**.
+3. Turn off **Close duplicate tabs** to keep every copy open. Use **Duplicate matching** to control how query parameters and URL fragments are compared.
 
-The bundled model list includes GPT-6/6.1, Claude 5.5, and Gemini 3.8 Flash and 3.5 Flash-Lite.
-New installations use low-cost defaults: `gpt-6-luna`, `claude-haiku-5-5`, and `gemini-3.5-flash-lite`.
-Existing model selections remain unchanged, including IDs absent from the bundled list.
+| On-device setup | Configuration |
+| --- | --- |
+| Firefox with oMLX | Start oMLX and install `Qwen2.5-Coder-1.5B-4bit`. In **Local model server**, blank fields use that model at `http://127.0.0.1:8000/v1`. |
+| Chrome with Gemini Nano | Select **Chrome built-in AI** and use **Check availability** to prepare the model. |
+| Other local servers | Enter the server address and exact model name. Use **Test connection / Refresh models** to see what the server offers. |
 
-When you open Settings, the extension requests model lists directly from each provider with a saved API key.
-Successful results remain in a local cache for 24 hours. **Refresh models** bypasses that cache.
-A new or changed key also triggers a refresh after you leave the key field.
-These requests send no tab data and do not generate AI responses.
-If a request fails, the cached or bundled list remains available.
+Use a server on this computer and leave provider fallback and GitHub integrations off to keep tab data here. For cloud or GitHub features, see what data they use in the [privacy policy](PRIVACY_POLICY.md).
 
-Discovery adds models without changing your selection or the bundled recommendations.
-Gemini discovery requires `generateContent` support and excludes known specialized model names.
-OpenAI does not report endpoint compatibility, so the extension filters names conservatively. Discovered OpenAI entries are not compatibility-tested.
-New model families or API formats can require an extension update.
+In **Grouping rules and toolbar behaviour**, set excluded sites, choose how to handle existing groups, or add AI grouping to the toolbar click. Use **Pinned tabs** to save URL rules. Use **GitHub** to group your open pull requests, review requests, and issue tabs.
 
-Sources: [OpenAI models](https://platform.openai.com/docs/models), [Claude models](https://docs.anthropic.com/en/docs/about-claude/models/overview), [Gemini models](https://ai.google.dev/gemini-api/docs/models).
+## Develop
 
-## AI without a provider API key
+Chrome and Firefox share the settings UI and grouping code. The build gives each browser its own manifest. Run `sh scripts/validate.sh` with Node.js and Python 3 to run the tests, validate the store assets, and rebuild both outputs.
 
-Chrome built-in AI and the local model server do not need a provider API key.
-
-Provider fallback is off by default. If you enable it, a local provider can try the other local provider. Chrome built-in AI joins only after its model is downloaded. The local model server joins only after you set a model name.
-
-Cloud fallback requires a separate opt-in. Each attempted cloud provider receives the same sanitized tab data. A provider can receive the prompt even when its request fails.
-
-When the selected provider is **OpenAI Compatible API Host**, you must set a base URL and model name. API key use depends on the host. During test or organization, the extension requests access only to the configured host origin.
-
-For custom hosts on another machine or network, use `https://`. Public `http://` endpoints are blocked. `http://` is supported for loopback hosts (for example `localhost` and `127.0.0.1`) and for private-network addresses: `10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, and IPv6 `fc00::/7` or `fe80::/10`. Loopback needs no permission; every other host is asked for once, the first time you test it or organize from the toolbar.
-
-The carrier-grade NAT range `100.64.0.0/10`, which Tailscale uses, is not treated as local: ISPs also route that range inside their own networks, so plain HTTP there can leave your network. Use `https://` for such a host (for example with Tailscale Serve), or a private-network address.
-
-### Chrome built-in AI (Gemini Nano)
-
-Nothing to install — the model runs inside Chrome itself.
-
-- Requires **Chrome 138+** on a supported desktop platform and about **22 GB** of free disk space.
-- GPU use requires more than **4 GB of VRAM**. CPU use requires at least **16 GB of RAM** and four CPU cores.
-- The first model download requires an unmetered connection.
-- Chrome downloads the model (a few GB) on first use. Because the download can need a user gesture that a service worker doesn't have, use **Options → Check availability → Download model** to fetch it up front.
-- Gemini Nano is smaller than cloud models, so grouping is coarser. The extension organizes tabs in **batches of 20** and merges matching group names.
-
-### Local model server (Ollama, LM Studio, llama.cpp, vLLM)
-
-The extension connects only to an OpenAI-compatible server on this computer or your own local network: `localhost`, `127.0.0.1`, or a private-network address such as `192.168.1.20`. A server elsewhere on the network needs host access, which **Test connection** requests once, or which is requested when you start organization from the toolbar. The server configuration controls local processing and any forwarding.
-
-1. Install Ollama from [its official download page](https://ollama.com/download).
-2. In Settings, select **Local model server**. Leave the address blank for `http://localhost:11434/v1`.
-3. Expand **Ollama setup commands and suggestion sources**.
-4. Choose your terminal type.
-5. If Ollama already runs, quit its app or stop its service before the foreground setup.
-6. Run the displayed server command in a terminal. Keep that terminal open.
-7. In another terminal, run the displayed `ollama pull` command.
-8. Select **Test connection / Refresh models**.
-9. Choose an installed model from the dropdown, or enter its exact name manually.
-
-The setup commands allow this extension's exact origin through `OLLAMA_ORIGINS`. The extension does not run terminal commands or download models.
-The setup section also includes a command for the macOS app and links for persistent service settings.
-In LM Studio, enable CORS in the server settings. Ollama pull commands do not install models into LM Studio.
-
-When you select the local provider, the extension checks the configured address. It also checks when Settings opens with that provider selected.
-Detection never scans ports or network addresses. Automatic detection never requests host permission.
-The manual refresh can request access to a configured private-network host.
-Ollama discovery shows its version, installed models, disk sizes, and currently loaded models when those endpoints are available.
-Other compatible servers still use `/v1/models`. Saved selections remain unchanged after discovery.
-
-#### Suggested small Ollama models
-
-These suggestions use official model specifications, reviewed November 16, 2026. They are starting points, not measured tab-grouping rankings.
-
-| Model | Approximate download | Selection rationale |
-| --- | --- | --- |
-| [`qwen2.5:1.5b`](https://ollama.com/library/qwen2.5:1.5b) | 986 MB | Suggested starting point. The family emphasizes JSON output. Apache 2.0 license. |
-| [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b) | 1.9 GB | Larger alternative from the same family. Uses the Qwen license, not Apache 2.0. |
-| [`gemma3:1b`](https://ollama.com/library/gemma3:1b) | 806 MB | Lightweight, text-only alternative. Gemma terms apply. |
-
-Download sizes are not RAM requirements. Results depend on your tabs, hardware, prompt, and model settings.
-The dropdown separates installed models from suggestions. Selecting an uninstalled suggestion shows its pull command without changing the active model.
-Suggestions update with extension releases. The extension does not fetch a remote recommendation feed or treat popularity as task accuracy.
-
-Notes:
-
-- Local generation is slow. A 35B model takes roughly one minute for 12 tabs. Requests stop after three minutes. If a timeout occurs, use a smaller model or organize fewer tabs.
-- Small models are less reliable at emitting bare JSON, so a stricter retry is attempted automatically before failing.
-- A server on another machine must listen on your network interface and be allowed by your firewall, not only on `127.0.0.1`.
-
-## Example: GitHub issue tabs
-
-For tabs such as:
-
-- `https://github.com/Expensify/Expensify/issues/573091`
-- `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595795518`
-- `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595796076`
-
-With the applicable dedupe settings, the extension treats these tabs as one logical page. It keeps the tab with the **highest** anchor number and closes the others.
-
-For example, settings can contain this optional ordered list of exact GitHub issue label names:
-
-1. `Overdue`
-2. `Daily`
-3. `Bug`
-4. `New Feature`
-
-Label matching is exact and case-insensitive. The first configured matching label wins. Colour selectors follow the configured order. A reordered label keeps its colour.
-
-GitHub label colours do not control Chrome group colours. The default colours use this order: red, green, purple, cyan, orange, pink, yellow, blue, grey. The extension reserves the current BOOKMARKS and PR colours, and grey.
-
-After normal dedupe, issues with `Overdue` go to **Overdue** first. Other issues go to **Daily**, **Bug**, or **New Feature**, as applicable.
-
-An issue with `Bug` and `New Feature` goes to **Bug** because `Bug` appears first in settings.
-
-If the **Closed** feature is enabled, a closed issue goes to **Closed** instead of a label group.
-
-The extension does not create empty groups. Pinned and split-view tabs remain unchanged.
-
-Managed groups appear after pinned tabs. Their order is BOOKMARKS, PRs, configured labels, and Closed. Configured labels use their settings order.
-
-## Project structure
-
-```
-├── manifest.json          # Extension config and permissions
-├── background.js          # Service worker (dedupe, pin tidy, AI, GitHub groups)
-├── options.html/css/js    # Full settings (API keys, lists, PRs, AI)
-├── icons/                 # Runtime icons at 16, 48, and 128 pixels
-├── scripts/               # Release builder and validators
-├── store-assets/          # Listing artwork and screenshots
-├── PRIVACY_POLICY.md
-├── RELEASE_NOTES.md
-└── README.md
-```
-
-## Install from source (local use)
-
-### Requirements
-
-- **Google Chrome**, **Microsoft Edge**, or another **Chromium** browser with unpacked extensions.
-- For **cloud AI organization**: an API key from OpenAI, Anthropic, Google, or more than one provider.
-- For **AI without a provider key**: Chrome 138+ on supported hardware, or a local OpenAI-compatible server such as [Ollama](https://ollama.com) on this computer or your network. See [AI without a provider API key](#ai-without-a-provider-api-key).
-- For **GitHub tab groups**: a GitHub personal access token with access to the applicable repositories.
-
-### Steps
-
-1. **Clone** this repository:
-
-   ```bash
-   git clone https://github.com/twisterdotcom/smart-tab-organiser.git
-   cd smart-tab-organiser
-   ```
-
-2. Open the extensions page:
-
-   - Chrome: `chrome://extensions`
-   - Edge: `edge://extensions`
-
-3. Turn on **Developer mode**.
-
-4. Click **Load unpacked** and choose this folder (the directory that contains `manifest.json`).
-
-5. **Pin the extension** (optional): use the puzzle icon → pin **Smart Tab Organiser** so the toolbar actions are easy to reach.
-
-### First-time setup
-
-1. Right-click the extension icon → **Options** (or open Options from the extensions list).
-2. Set the **dedupe**, **pinned tab**, and **GitHub tab group** options that you want.
-3. Under AI settings, choose a **provider**. Add an API key only for a cloud provider.
-4. Reload the extension after code changes: on `chrome://extensions` / `edge://extensions`, click **Reload** on the extension card.
-
-## How to use
-
-### Toolbar icon (default)
-
-Left-click runs **dedupe** and then **tidy pinned tabs**. The action also refreshes enabled GitHub groups. You can disable label-group sync for toolbar clicks. Manual label refresh remains available.
-
-If **Organize tabs on extension icon click** is enabled, AI organization runs after the managed-group preparation. The badge can show the duplicate count.
-
-
-### Context menu
-
-Right-click the extension icon. The menu entries appear in this order:
-
-1. **Deduplicate AND organize tabs with AI**
-2. **Reload all tabs**
-3. **Collapse all tab groups**
-4. **Expand all tab groups**
-5. **Edit extension options**
-
-### Keyboard
-
-Assign a key to **Organize tabs with AI** at `chrome://extensions/shortcuts`.
-
-## Development
-
-- Edit files in this repository.
-- On the extensions page, click **Reload** on the extension card.
-- Use **Inspect views: service worker** and the options-page developer tools to debug.
-- Run `./scripts/validate.sh` before a release. It checks the source, tests, package, and store images.
-
-## How dedupe works (simplified)
-
-1. **Normalise** URLs using your settings (query/hash handling).
-2. **Group** tabs by normalised URL.
-3. **Pick a keeper**, such as the tab with the highest hash number or the most recent access time.
-4. **Close** other tabs in the group.
-
-## Permissions
-
-| Permission | Why |
-|------------|-----|
-| `tabs` | Read tab URLs/titles, close tabs, reload, pin/unpin, reorder. |
-| `storage` | Save settings and optional API tokens locally. |
-| `tabGroups` | Create and update BOOKMARKS, PR, configured-label, Closed, and AI groups. |
-| `notifications` | User feedback for long-running or batch actions (where implemented). |
-| `contextMenus` | Right-click commands for duplicate removal and tab organization. |
-| Host access for OpenAI, Anthropic, Gemini, GitHub | Used only for configured cloud AI and GitHub features. Cloud AI receives titles, sanitized URLs, custom instructions, and relevant group names. |
-| Optional host access for custom OpenAI-compatible hosts | Requested at runtime only when you test or use a configured custom host. Public hosts must use HTTPS. |
-| Host access for `localhost` / `127.0.0.1` | Reaches a model server on this computer with no prompt. |
-| Optional host access for private-network hosts | Requested at runtime only when you test or use a host on your own network (`10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, IPv6 `fc00::/7`, `fe80::/10`). No other `http://` host is reachable. |
-
-Details: [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
-
-## Build a Chrome Web Store package
-
-Run the release builder from the repository root:
-
-```sh
-python3 scripts/build-release.py
-```
-
-The builder creates a validated ZIP in `dist/`.
-
-## Contributing
-
-1. Fork the repository  
-2. Create a branch (`git checkout -b feature/your-feature`)  
-3. Commit and push  
-4. Open a pull request  
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Acknowledgments
-
-Built for people who live in the browser—especially anyone drowning in duplicate issue tabs and pull requests.
-
----
-
-Made with care by [twisterdotcom](https://github.com/twisterdotcom)
+[Release notes](RELEASE_NOTES.md) · [MIT license](LICENSE) · [Original project](https://github.com/twisterdotcom/smart-tab-organiser)

@@ -1,7 +1,8 @@
-// Background service worker for Smart Tab Organiser extension
-importScripts('ai-models.js', 'host-access.js');
+// Firefox loads these dependencies before this script through its manifest.
+if (typeof importScripts === 'function') importScripts('ai-models.js', 'host-access.js');
 
-console.log('Smart Tab Organiser extension background service worker loaded');
+const isFirefox = chrome.runtime.getURL('').startsWith('moz-extension:');
+const ollamaOrigins = isFirefox ? 'moz-extension://*' : 'chrome-extension://*';
 
 const PR_GROUP_TITLE = 'PRs';
 const CLOSED_GROUP_TITLE = 'Closed';
@@ -417,6 +418,11 @@ const PROVIDER_LABELS = {
 // Providers that the extension contacts only on this computer.
 const LOCAL_PROVIDERS = ['chrome-ai', 'local'];
 
+function preferredAiProvider(settings) {
+  const preferred = settings.aiProvider || (isFirefox ? 'local' : 'openai');
+  return isFirefox && preferred === 'chrome-ai' ? 'local' : preferred;
+}
+
 function isLocalProvider(provider) {
   return LOCAL_PROVIDERS.includes(provider);
 }
@@ -595,7 +601,7 @@ function classifyAiError(err) {
   }
   if (status === 403 || /forbidden|permission denied|not allowed/.test(lower)) {
     const hint = provider === 'local'
-      ? 'Allow Chrome extension requests in the local server. For Ollama, restart it with OLLAMA_ORIGINS="chrome-extension://*"; for LM Studio, enable CORS.'
+      ? `Allow extension requests in the local server. For Ollama, restart it with OLLAMA_ORIGINS="${ollamaOrigins}"; for LM Studio, enable CORS.`
       : `Your ${label} key may not have access to the selected model.`;
     return {
       type: 'forbidden',
@@ -741,7 +747,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: 'dedupe-and-organize',
-      title: 'Deduplicate AND organize tabs with AI',
+      title: 'Organize tabs with AI',
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -899,7 +905,7 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
   } finally {
     isOrganizing = false;
     stopLoadingSpinner();
-    chrome.action.setTitle({ title: 'Dedupe and tidy pinned tabs (left-click)' }).catch(() => {});
+    chrome.action.setTitle({ title: 'Tidy pinned tabs (left-click)' }).catch(() => {});
     chrome.contextMenus.update('dedupe-and-organize', { enabled: true }).catch(() => {});
     updateBadge(); // Restore duplicate-count badge
 
@@ -1646,6 +1652,11 @@ async function refreshTabsForDedupe(tabs) {
 // Close duplicate tabs
 async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, windowId) {
   try {
+    const { closeDuplicateTabs } = await chrome.storage.local.get(['closeDuplicateTabs']);
+    if (closeDuplicateTabs === false) {
+      return { success: true, closedCount: 0, message: 'Duplicate tabs kept open' };
+    }
+
     // Get all tabs in the target window with URLs loaded (handles suspended tabs)
     let tabs = await getAllTabsWithUrls(windowId);
     tabs = await refreshTabsForDedupe(tabs);
@@ -3223,27 +3234,12 @@ async function callGemini(apiKey, model, tabs, customInstructions, existingGroup
 // Local models: Ollama (and other OpenAI-compatible local servers)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
 // Local models are slow (a 35B model takes ~50s for a dozen tabs), but this must stay
 // under the ~5 minute cap Chrome puts on a single service worker event.
 const OLLAMA_TIMEOUT_MS = 180000;
 
-/**
- * Normalize a user-entered local server address into an OpenAI-compatible base URL.
- * Accepts "localhost:11434", "http://localhost:11434", "http://localhost:11434/v1".
- */
 function normalizeLocalBaseUrl(rawUrl) {
-  let url = (rawUrl || '').trim() || DEFAULT_OLLAMA_BASE_URL;
-  if (!/^https?:\/\//i.test(url)) {
-    url = `http://${url}`;
-  }
-  url = url.replace(/\/+$/, '');
-  // Strip a full endpoint path if the user pasted one, then ensure the /v1 prefix.
-  url = url.replace(/\/chat\/completions$/, '');
-  if (!/\/v\d+$/.test(url)) {
-    url = `${url}/v1`;
-  }
-  return url;
+  return globalThis.resolveLocalModelSettings({ localBaseUrl: rawUrl }, isFirefox).baseUrl;
 }
 
 /**
@@ -3315,13 +3311,13 @@ async function requireLocalModelHostPermission(baseUrl, requestIfMissing = false
  * Returns whether access is available; a denial never stops organization.
  */
 async function grantLocalModelHostPermissionForUserGesture(settings) {
-  const hasModel = !!settings.localModel?.trim();
-  const localCanJoin = hasModel
-    && (settings.aiProvider === 'local'
-      || (settings.aiProvider === 'chrome-ai' && settings.aiFallbackEnabled === true));
+  const { baseUrl, model } = globalThis.resolveLocalModelSettings(settings, isFirefox);
+  const preferred = preferredAiProvider(settings);
+  const localCanJoin = model
+    && (preferred === 'local'
+      || (preferred === 'chrome-ai' && settings.aiFallbackEnabled === true));
   if (!localCanJoin) return false;
 
-  const baseUrl = normalizeLocalBaseUrl(settings.localBaseUrl);
   if (!isAllowedLocalModelUrl(baseUrl)) return false; // The provider reports this when it runs.
 
   try {
@@ -3340,8 +3336,9 @@ async function grantLocalModelHostPermissionForUserGesture(settings) {
  */
 async function grantCustomOpenAIHostPermissionForUserGesture(settings) {
   if (!settings.customOpenaiBaseUrl?.trim() || !settings.customOpenaiModel?.trim()) return false;
-  const isPrimary = settings.aiProvider === 'custom-openai';
-  const isFallback = isLocalProvider(settings.aiProvider)
+  const preferred = preferredAiProvider(settings);
+  const isPrimary = preferred === 'custom-openai';
+  const isFallback = isLocalProvider(preferred)
     && settings.aiFallbackEnabled === true
     && settings.aiAllowCloudFallback === true;
   if (!isPrimary && !isFallback) return false;
@@ -3392,12 +3389,12 @@ function localServerError(error, baseUrl) {
     if (globalThis.HostAccess.isStaticallyAllowedUrl(new URL(baseUrl))) {
       return new Error(
         `Could not reach the local model server at ${baseUrl}. Check that it is running, and that it allows requests from extensions ` +
-        `(for Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*").`
+        `(for Ollama, start it with OLLAMA_ORIGINS="${ollamaOrigins}").`
       );
     }
     return new Error(
       `Could not reach the local model server at ${baseUrl}. Check that the machine is online and the server is running, `
-      + 'and that host access is still granted in Options. For Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*".'
+      + `and that host access is still granted in Options. For Ollama, start it with OLLAMA_ORIGINS="${ollamaOrigins}".`
     );
   }
   return error;
@@ -3522,7 +3519,7 @@ function openAiCompatibleContentText(value) {
  * Local models are less reliable at emitting bare JSON, so one stricter retry is attempted.
  */
 async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
-  const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  const { baseUrl, isOmlx } = globalThis.resolveLocalModelSettings({ localBaseUrl: rawBaseUrl }, isFirefox);
   requireAllowedLocalModelUrl(baseUrl);
   await requireLocalModelHostPermission(baseUrl);
   const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
@@ -3544,6 +3541,7 @@ async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, exist
     try {
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
+        redirect: 'error',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
@@ -3551,6 +3549,12 @@ async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, exist
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 5000,
           temperature: 0.2,
+          ...(isFirefox && isOmlx ? {
+            response_format: {
+              type: 'json_schema',
+              json_schema: { name: 'tab_groups', schema: TAB_GROUPS_SCHEMA, strict: true },
+            },
+          } : {}),
           stream: true
         })
       });
@@ -3760,7 +3764,7 @@ async function callCustomOpenAI(rawBaseUrl, apiKey, model, tabs, customInstructi
 // Gemini Nano has a small context window, so tabs are organized in batches and merged.
 const CHROME_AI_TABS_PER_BATCH = 20;
 
-const CHROME_AI_GROUPS_SCHEMA = {
+const TAB_GROUPS_SCHEMA = {
   type: 'array',
   items: {
     type: 'object',
@@ -3917,7 +3921,7 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, min
     const session = await createChromeAiSession();
     let content;
     try {
-      content = await session.prompt(prompt, { responseConstraint: CHROME_AI_GROUPS_SCHEMA });
+      content = await session.prompt(prompt, { responseConstraint: TAB_GROUPS_SCHEMA });
     } catch (error) {
       throw new Error(`Chrome built-in AI failed: ${error.message}`);
     } finally {
@@ -4024,9 +4028,8 @@ async function callProvider(provider, settings, tabs, instructions, existingGrou
       return await callChromeAI(promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'local') {
-      const model = settings.localModel?.trim();
+      const { baseUrl, model } = globalThis.resolveLocalModelSettings(settings, isFirefox);
       if (!model) throw new AiProviderError({ provider, message: 'No local model name configured' });
-      const baseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
       return await callLocalModel(baseUrl, model, promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'custom-openai') {
@@ -4059,8 +4062,7 @@ function providerHasKey(provider, settings) {
  * is 'blocked-host' and stays out of the usable chain, so no tab is touched
  * before the error names the address.
  */
-async function localModelHostAccessStatus(rawBaseUrl) {
-  const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+async function localModelHostAccessStatus(baseUrl) {
   if (!isAllowedLocalModelUrl(baseUrl)) return 'blocked-host';
   const parsed = new URL(baseUrl);
   if (globalThis.HostAccess.isStaticallyAllowedUrl(parsed)) return 'ready';
@@ -4077,8 +4079,9 @@ async function providerConfigurationStatus(provider, settings) {
     return hostStatus.status;
   }
   if (provider === 'local') {
-    if (!settings.localModel?.trim()) return 'no-model-name';
-    return await localModelHostAccessStatus(settings.localBaseUrl);
+    const { baseUrl, model } = globalThis.resolveLocalModelSettings(settings, isFirefox);
+    if (!model) return 'no-model-name';
+    return await localModelHostAccessStatus(baseUrl);
   }
   return providerHasKey(provider, settings) ? 'ready' : 'no-key';
 }
@@ -4145,14 +4148,14 @@ function normalizeFallbackOrder(saved) {
  * The options page renders these directly, so the UI can never drift from this logic.
  */
 async function describeProviderChain(settings) {
-  const primary = settings.aiProvider || 'openai';
-  const order = normalizeFallbackOrder(settings.aiFallbackOrder);
+  const primary = preferredAiProvider(settings);
+  const order = normalizeFallbackOrder(settings.aiFallbackOrder).filter(provider => !isFirefox || provider !== 'chrome-ai');
   const fallbackEnabled = settings.aiFallbackEnabled === true;
   const localPrimary = isLocalProvider(primary);
 
   // Only probe Nano availability when it could actually join the chain.
   let chromeAiReady = false;
-  if (fallbackEnabled && localPrimary && primary !== 'chrome-ai') {
+  if (!isFirefox && fallbackEnabled && localPrimary && primary !== 'chrome-ai') {
     const status = await checkChromeAiAvailability();
     chromeAiReady = status.state === 'available';
   }

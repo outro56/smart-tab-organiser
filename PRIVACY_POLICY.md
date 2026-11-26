@@ -17,7 +17,7 @@ The extension reads these properties for tabs in the current window:
 - The tab title and URL
 - The pinned state and position
 - The tab-group identifier and group name
-- The last-accessed value, when Chrome provides it
+- The last-accessed value, when the browser provides it
 
 The extension uses this data to compare, close, reload, pin, move, and group tabs. It does not read page bodies, cookies, form values, or browsing history from other windows.
 
@@ -36,11 +36,11 @@ The extension stores these values in `chrome.storage.local`:
 - Domains that AI organization must skip
 - Optional API keys and a GitHub token
 
-Chrome stores this data in storage that belongs to the extension. The extension does not synchronize this data through `chrome.storage.sync`.
+The browser keeps these settings in storage that belongs to the extension. The extension does not synchronize them across devices.
 
 ### Authentication information
 
-API keys and the GitHub token are authentication information. The extension stores them in the user's Chrome profile until the user removes them or uninstalls the extension.
+API keys and the GitHub token are authentication information. The extension stores them in the user's browser profile until the user removes them or uninstalls the extension.
 
 The extension sends a credential only to the service that issued it. The extension sends credentials in request headers, not in request URLs.
 
@@ -50,7 +50,7 @@ Users can reduce financial risk by using dedicated provider keys with spending l
 
 ### Core tab management
 
-Duplicate removal, pinned-tab management, tab reloading, and local tab grouping do not contact a developer server. These features process tab data in Chrome.
+Duplicate removal, pinned-tab management, and tab reloading run in the browser. For AI grouping, the selected provider determines where the tab data is processed.
 
 ### Cloud AI providers
 
@@ -164,7 +164,7 @@ The extension does not sell user data. It does not use user data for advertising
 
 Local settings and credentials remain until the user removes them or uninstalls the extension. The user can remove a credential by clearing its field on the options page.
 
-Chrome removes extension-local storage when the user uninstalls the extension. A third-party provider can retain API data under its own terms and account settings.
+The browser removes extension-local storage when the user uninstalls the extension. A third-party provider can retain API data under its own terms and account settings.
 
 ## Security
 

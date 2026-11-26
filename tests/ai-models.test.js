@@ -18,6 +18,18 @@ function loadModelCatalog() {
   return context;
 }
 
+test('local defaults preserve explicit model and server choices', () => {
+  const { resolveLocalModelSettings } = loadModelCatalog();
+  const alternate = resolveLocalModelSettings({ localBaseUrl: 'localhost:1234', localModel: ' saved-model ' }, true);
+  assert.equal(alternate.baseUrl, 'http://localhost:1234/v1');
+  assert.equal(alternate.model, 'saved-model');
+  assert.equal(resolveLocalModelSettings({ localBaseUrl: 'localhost:1234' }, true).model, '');
+
+  const chromeDefault = resolveLocalModelSettings({}, false);
+  assert.equal(chromeDefault.baseUrl, 'http://localhost:11434/v1');
+  assert.equal(chromeDefault.model, '');
+});
+
 test('bundled catalogs include current models and low-cost defaults', () => {
   const context = loadModelCatalog();
   const expected = {

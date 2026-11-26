@@ -9,558 +9,570 @@
 </head>
 <body>
   <div class="container">
-    <header>
+    <header class="app-header">
+      <img src="icons/icon48.png" alt="" width="36" height="36">
       <h1>Smart Tab Organiser</h1>
-      <p class="subtitle">Settings & Configuration</p>
     </header>
-    
-    <div class="content">
-      <section class="info-section">
-        <h2>How to Use</h2>
-        <div class="info-content">
-          <p><strong>Click the extension icon</strong> to deduplicate tabs, refresh enabled GitHub groups, and tidy your pinned tabs. Label-group sync for toolbar clicks can be disabled below. If no tabs are pinned yet, the extension pins tabs from your list and opens any missing URLs. The icon badge shows how many duplicate tabs are open.</p>
-          <p><strong>Right-click menu:</strong> Use the extension menu to organize tabs, reload tabs, collapse or expand groups, or open extension options.</p>
-          <p><strong>AI Tab Organization:</strong> Use the context menu, the button on this page, or a shortcut that you assign at chrome://extensions/shortcuts. These actions deduplicate tabs first. Configure a provider below.</p>
-        </div>
-      </section>
 
-      <section class="actions-section">
-        <h2>Actions</h2>
-        <div class="actions">
-          <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
-          <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
-          <button id="organizeTabsBtn" class="btn btn-primary">Deduplicate and organize tabs with AI</button>
-          <button id="tidyPinnedBtn" class="btn btn-secondary">Deduplicate and tidy pinned tabs</button>
-          <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup All Tabs</button>
-        </div>
-        <div id="actionStatus" class="status"></div>
-      </section>
-      
-      <section class="settings-section">
-        <h2>Duplicate Detection Settings</h2>
-        <p class="section-description">Configure how the extension identifies duplicate tabs.</p>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Ignore query parameters</label>
-            <p class="setting-description">
-              When enabled, URLs with different query strings are treated as duplicates.
-              <br><strong>Example:</strong> <code>example.com/?a=1</code> and <code>example.com/?b=2</code> are considered duplicates.
-            </p>
+    <div class="settings-shell">
+      <nav class="settings-nav" aria-label="Settings">
+        <a href="#grouping" aria-current="page">Grouping</a>
+        <a href="#ai-settings">AI models</a>
+        <a href="#pinned-tabs">Pinned tabs</a>
+        <a href="#github-groups">GitHub</a>
+      </nav>
+
+      <main class="content">
+        <div id="actionStatus" class="status" role="status"></div>
+
+        <section id="grouping" data-settings-view aria-labelledby="grouping-heading">
+          <div class="view-header">
+            <h2 id="grouping-heading">Tab grouping</h2>
+            <p>Organize tabs in this window or group them automatically as you browse.</p>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="ignoreQuery">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Ignore hash when comparing</label>
-            <p class="setting-description">
-              When enabled, URLs are compared without their hash/anchor, but the hash is still used to determine which tab to keep (highest anchor number).
-              <br><strong>Example:</strong> <code>example.com/#comment-123</code> and <code>example.com/#comment-456</code> are duplicates, but the one with #comment-456 is kept.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="ignoreHash">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Reload remaining tabs</label>
-            <p class="setting-description">
-              When enabled, remaining tabs will be automatically reloaded after closing duplicates.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="reloadTabs">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </section>
-      
-      <section class="settings-section">
-        <h2>Pinned tabs</h2>
-        <p class="section-description">Define which URLs should be Chrome-pinned (compact favicon tabs on the left of the tab bar). When you run "Deduplicate and tidy pinned tabs" or organize with AI, any pinned tab not in this list will be unpinned, and matching unpinned tabs will be pinned and ordered. <strong>If no tabs are pinned yet, the extension will pin tabs from this list (opening new tabs for any URL not already open).</strong></p>
-        
-        <div class="setting-item setting-item--stacked">
-          <div class="setting-info">
-            <label class="setting-label" for="pinnedUrls">Pinned URLs (one per line, order = tab order)</label>
-            <p class="setting-description">
-              <strong>Exact match</strong> (no prefix): only that exact URL stays pinned (after normalizing query/hash per your duplicate settings).<br>
-              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays pinned. For example, <code>*https://mail.example.com/</code> keeps all sample mail pages, and <code>*https://app.example.com/workspace/demo</code> keeps all pages in the sample workspace.<br>
-              <strong>Soft (only when already open):</strong> start with <code>~</code> so the tab is only pinned when it already exists in the window; the extension never opens it. Use <code>~*https://...</code> for soft prefix or <code>~https://...</code> for soft exact. Example: <code>~*https://app.example.com/workspace/demo</code> keeps the sample workspace pinned only when it is already open. Leave empty to keep all currently pinned tabs as-is when tidying.
-            </p>
-          </div>
-          <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.example.com/&#10;*https://app.example.com/workspace/demo&#10;https://docs.example.com/start&#10;*https://chat.example.com/" rows="5"></textarea>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="bookmarksGroupColor">BOOKMARKS group colour</label>
-            <p class="setting-description">Colour for the BOOKMARKS tab group. Applied whenever you run dedupe/tidy so the group keeps this colour.</p>
-          </div>
-          <select id="bookmarksGroupColor" class="provider-select">
-            <option value="yellow">Yellow</option>
-            <option value="green">Green</option>
-            <option value="blue">Blue</option>
-            <option value="red">Red</option>
-            <option value="pink">Pink</option>
-            <option value="purple">Purple</option>
-            <option value="cyan">Cyan</option>
-            <option value="orange">Orange</option>
-            <option value="grey">Grey</option>
-          </select>
-        </div>
-      </section>
-
-      <section class="settings-section settings-section--github">
-        <h2>GitHub tab groups</h2>
-        <p class="section-description">These optional features use your GitHub token to maintain tab groups. The token stays in local storage and goes only to GitHub. Label-group colours come from these settings, not from GitHub label colours. Managed groups appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.</p>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="githubToken">GitHub personal access token</label>
-            <p class="setting-description">
-              The extension uses this token to fetch open pull requests, issue states, and label names. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
-              <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener noreferrer">github.com/settings/tokens</a>
-            </p>
-          </div>
-          <div class="input-with-toggle">
-            <input type="password" id="githubToken" class="api-key-input" placeholder="ghp_...">
-            <button type="button" class="toggle-password" aria-label="Show token" title="Show token"><span class="eye-icon" aria-hidden="true"></span></button>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="prGroupEnabled">Enable PR tab group</label>
-            <p class="setting-description">
-              When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. It opens missing tabs for matching PRs from GitHub. Each dedupe or organize action refreshes this group first. Tabs that no longer match an open PR leave the group but remain open. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="prGroupEnabled">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="prGroupColor">PRs group colour</label>
-            <p class="setting-description">Colour for the <strong>PRs</strong> tab group. Applied whenever the group is refreshed.</p>
-          </div>
-          <select id="prGroupColor" class="provider-select">
-            <option value="blue">Blue</option>
-            <option value="red">Red</option>
-            <option value="yellow">Yellow</option>
-            <option value="green">Green</option>
-            <option value="pink">Pink</option>
-            <option value="purple">Purple</option>
-            <option value="cyan">Cyan</option>
-            <option value="orange">Orange</option>
-            <option value="grey">Grey</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <button id="refreshPrGroupBtn" class="btn btn-secondary">Refresh PR group</button>
-          <p class="setting-description" style="margin-top: 0.5em;">Refresh the <strong>PRs</strong> group now. Dedupe and organize actions also refresh it when the feature is enabled.</p>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="githubLabelGroupsEnabled">Enable GitHub issue label groups</label>
-            <p class="setting-description">When enabled, the extension groups GitHub issue tabs by the label names below.</p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="githubLabelGroupsEnabled">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="setting-item" id="githubLabelGroupsOnClickRow">
-          <div class="setting-info">
-            <label class="setting-label" for="githubLabelGroupsOnClick">Refresh label groups on toolbar click</label>
-            <p class="setting-description">Runs label-group sync after deduplication when you click the extension icon. Manual refresh remains available.</p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="githubLabelGroupsOnClick">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="setting-item setting-item--stacked">
-          <div class="setting-info">
-            <label class="setting-label" for="githubLabelGroupNames">GitHub issue label names</label>
-            <p class="setting-description" id="githubLabelGroupNamesHelp">
-              Enter one exact GitHub label name on each line. Each label gets a Chrome colour selector. The top-to-bottom order sets the matching priority and tab-strip order. Matching is exact and ignores letter case. The first match wins. The <strong>Closed</strong> group wins when its feature is enabled. Pinned and split-view tabs remain unchanged.
-            </p>
-          </div>
-          <textarea id="githubLabelGroupNames" class="github-label-groups-textarea" rows="6" aria-describedby="githubLabelGroupNamesHelp githubLabelGroupNamesWarning" spellcheck="false" placeholder="bug&#10;help wanted"></textarea>
-          <p id="githubLabelGroupNamesWarning" class="github-label-groups-warning" role="status" hidden></p>
-          <div id="githubLabelGroupColors" class="github-label-group-colors" aria-label="GitHub issue label group colours"></div>
-        </div>
-
-        <div class="setting-item">
-          <button id="refreshGithubLabelGroupsBtn" class="btn btn-secondary">Dedupe and refresh label groups</button>
-          <p class="setting-description" style="margin-top: 0.5em;">Dedupe GitHub issue tabs and refresh the label groups now.</p>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="closedIssueGroupEnabled">Move closed issues to a Closed group</label>
-            <p class="setting-description">
-              When enabled, each dedupe or organize action checks GitHub issue tabs in the current window. The extension moves each closed issue into <strong>Closed</strong>. Pinned and split-view tabs remain unchanged.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="closedIssueGroupEnabled">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="setting-item">
-          <button id="refreshClosedIssueGroupBtn" class="btn btn-secondary">Refresh Closed group</button>
-          <p class="setting-description" style="margin-top: 0.5em;">Check the GitHub issue tabs in the current window now.</p>
-        </div>
-      </section>
-      
-      <section id="ai-settings" class="settings-section settings-section--ai">
-        <h2>AI Tab Organization</h2>
-        <p class="section-description">Pick a provider and configure its card. Provider fallback is off until you enable it.</p>
-
-        <div class="privacy-notice" role="note">
-          <strong>AI data disclosure:</strong> AI organization sends tab titles, URLs without query parameters or fragments, custom instructions, and relevant group names to the selected provider. If fallback is enabled, each attempted provider can receive the same data. A provider can receive the prompt even when its request fails. URL paths can contain private information. Provider terms control API costs and retention.
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="aiProvider">Preferred AI Provider</label>
-            <p class="setting-description">Used whenever you organize tabs with AI. The card of the selected provider is highlighted below.</p>
-          </div>
-          <select id="aiProvider" class="provider-select">
-            <option value="openai">OpenAI (cloud)</option>
-            <option value="claude">Claude (cloud)</option>
-            <option value="gemini">Gemini (cloud)</option>
-            <option value="chrome-ai">Chrome built-in AI (on-device)</option>
-            <option value="local">Local model server — Ollama / LM Studio</option>
-            <option value="custom-openai">OpenAI Compatible API Host</option>
-          </select>
-        </div>
-
-        <h3 class="subsection-title">Cloud providers <span class="subsection-note">API key usually required — custom hosts can omit it</span></h3>
-        <p class="section-description">Key storage: Keys are saved in your Chrome profile. Use dedicated keys with provider spending limits.</p>
-        <p class="section-description">Model lists refresh when you open Settings, at most once per day for each saved key. Refresh models checks immediately. These requests send no tab data and do not change your selected model. New API formats can still require an extension update.</p>
-        <div class="provider-grid" id="cloudProviderGrid">
-          <div class="provider-card" data-provider="openai">
-            <div class="provider-card-header">OpenAI <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="openaiKey">API key <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
-            <div class="input-with-toggle">
-              <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
-              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-            </div>
-            <label class="field-label" for="openaiModel">Model</label>
-            <select id="openaiModel" class="provider-select" aria-describedby="openaiModelRecommended"></select>
-            <p class="model-recommended-hint" id="openaiModelRecommended"></p>
-          </div>
-
-          <div class="provider-card" data-provider="claude">
-            <div class="provider-card-header">Claude <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="claudeKey">API key <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
-            <div class="input-with-toggle">
-              <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
-              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-            </div>
-            <label class="field-label" for="claudeModel">Model</label>
-            <select id="claudeModel" class="provider-select" aria-describedby="claudeModelRecommended"></select>
-            <p class="model-recommended-hint" id="claudeModelRecommended"></p>
-          </div>
-
-          <div class="provider-card" data-provider="gemini">
-            <div class="provider-card-header">Gemini <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="geminiKey">AI Studio authorization key <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
-            <div class="input-with-toggle">
-              <input type="password" id="geminiKey" class="api-key-input" placeholder="Authorization key">
-              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-            </div>
-            <label class="field-label" for="geminiModel">Model</label>
-            <select id="geminiModel" class="provider-select" aria-describedby="geminiModelRecommended"></select>
-            <p class="model-recommended-hint" id="geminiModelRecommended"></p>
-          </div>
-
-          <div class="provider-card" data-provider="custom-openai">
-            <div class="provider-card-header">OpenAI Compatible <span class="primary-badge">Primary</span></div>
-            <p class="provider-card-desc">Connect to any provider that implements the OpenAI-compatible API, such as OpenRouter, Together AI, or a self-hosted server.</p>
-            <label class="field-label" for="customOpenaiBaseUrl">Base URL</label>
-            <input type="text" id="customOpenaiBaseUrl" class="api-key-input" placeholder="https://api.example.com/v1" spellcheck="false">
-            <label class="field-label" for="customOpenaiKey">API key <span class="field-label-optional">(optional)</span></label>
-            <div class="input-with-toggle">
-              <input type="password" id="customOpenaiKey" class="api-key-input" placeholder="sk-...">
-              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-            </div>
-            <label class="field-label" for="customOpenaiModel">Model name</label>
-            <input type="text" id="customOpenaiModel" class="api-key-input" placeholder="e.g. meta-llama/Llama-3-70b-chat-hf" list="customOpenaiModels" spellcheck="false" autocomplete="off">
-            <datalist id="customOpenaiModels"></datalist>
-            <div class="local-model-buttons">
-              <button type="button" id="testCustomOpenaiBtn" class="btn btn-secondary">Fetch models</button>
-            </div>
-            <div id="customOpenaiStatus" class="status"></div>
-          </div>
-        </div>
-
-        <h3 class="subsection-title">Local providers <span class="subsection-note">No provider API key</span></h3>
-        <div class="provider-grid provider-grid--two">
-          <div class="provider-card" data-provider="chrome-ai">
-            <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
-            <p class="provider-card-desc">Gemini Nano, running inside Chrome itself. Chrome downloads the model (a few GB) once; after that it works fully offline.</p>
-            <div class="local-model-buttons">
-              <button type="button" id="checkChromeAiBtn" class="btn btn-secondary">Check availability</button>
-              <button type="button" id="downloadChromeAiBtn" class="btn btn-secondary" hidden>Download model</button>
-            </div>
-            <div id="chromeAiStatus" class="status"></div>
-            <details class="setup-notes">
-              <summary>Requirements &amp; notes</summary>
-              <p>Chrome 138+ requires about 22 GB of free disk space and an unmetered connection for the first download. GPU use requires more than 4 GB of VRAM. CPU use requires at least 16 GB of RAM and four CPU cores. Gemini Nano is smaller than cloud models, so the extension organizes tabs in batches of 20.</p>
+          <div class="actions">
+            <button id="organizeTabsBtn" class="btn btn-primary">Organize tabs now</button>
+            <details class="action-menu">
+              <summary>More actions</summary>
+              <div class="action-menu-items">
+                <button id="testBtn" class="btn btn-secondary">Test duplicate detection</button>
+                <button id="reloadAllBtn" class="btn btn-secondary">Reload all tabs</button>
+                <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup all tabs</button>
+              </div>
             </details>
           </div>
-
-          <div class="provider-card" data-provider="local">
-            <div class="provider-card-header">Local model server <span class="primary-badge">Primary</span></div>
-            <p class="provider-card-desc">The extension sends prompts to a server on this computer or on your local network: <code>localhost</code>, <code>127.0.0.1</code>, or a private address such as <code>192.168.1.20</code>. A server elsewhere on the network needs host access, which "Test connection" or a toolbar-started organization asks for once. The server configuration determines whether it processes data locally or forwards it elsewhere. Compatible servers include Ollama, LM Studio, llama.cpp, and vLLM.</p>
-            <label class="field-label" for="localBaseUrl">Server address</label>
-            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false" title="localhost, 127.0.0.1, or a private-network address such as http://192.168.1.20:11434/v1">
-            <label class="field-label" for="localModelChoices">Installed models and setup suggestions</label>
-            <select id="localModelChoices" class="provider-select" aria-describedby="localModelSuggestion localModelStatus"></select>
-            <p class="model-recommended-hint">Detection runs when you select this provider or open Settings with it selected. It checks only the address above, or Ollama on localhost if blank. No network scan or model download occurs.</p>
-            <label class="field-label" for="localModel">Active model name (manual entry supported)</label>
-            <input type="text" id="localModel" class="api-key-input" placeholder="Select an installed model or enter its exact name" spellcheck="false">
-            <div class="local-model-buttons">
-              <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection / Refresh models</button>
+          <div class="setting-list">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="autoOrganizeEnabled">Group new tabs automatically</label>
+                <p class="setting-description">
+                  Runs after you open a tab. Opening another tab restarts the delay.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="autoOrganizeEnabled">
+                <span class="slider"></span>
+              </label>
             </div>
-            <div id="localModelStatus" class="status" role="status"></div>
-            <p class="model-recommended-hint" id="localModelSuggestion"></p>
-            <p class="model-recommended-hint"><a id="localModelSource" href="https://ollama.com/library/qwen2.5:1.5b" target="_blank" rel="noopener noreferrer">Official model details and license</a></p>
-            <details class="setup-notes" id="localModelSetup">
-              <summary>Ollama setup commands and suggestion sources</summary>
-              <p>These small-model suggestions use official Ollama specifications, reviewed November 16, 2026. They are starting points, not benchmark winners for tab grouping. Download sizes are approximate, not RAM requirements. Suggestions update with extension releases.</p>
-              <ol>
-                <li>Install Ollama from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">the official download page</a>.</li>
-                <li>For a foreground server, quit any existing Ollama app or service first. Choose your terminal below.</li>
-              </ol>
-              <label class="field-label" for="localSetupShell">Terminal</label>
-              <select id="localSetupShell" class="provider-select">
-                <option value="posix">macOS / Linux shell</option>
-                <option value="powershell">Windows PowerShell</option>
-              </select>
-              <p>Run this command in one terminal. Keep that terminal open. The command allows only this extension's origin.</p>
-              <pre class="setup-command"><code id="localServeCommand"></code></pre>
-              <p>In another terminal, download the suggested model:</p>
-              <pre class="setup-command"><code id="localPullCommand"></code></pre>
-              <p>Then select <strong>Test connection / Refresh models</strong>. Choose the model from the installed group to make it active. The extension never runs these commands.</p>
-              <p>For the macOS app instead of a foreground server, run this command, then quit and reopen Ollama:</p>
-              <pre class="setup-command"><code id="localMacCommand"></code></pre>
-              <p>Linux services and the Windows app need persistent environment settings. See the <a href="https://docs.ollama.com/faq#how-do-i-configure-ollama-server" target="_blank" rel="noopener noreferrer">Ollama server setup guide</a>. Keep the default loopback binding. Do not expose the server to the internet.</p>
-              <p>In LM Studio, enable CORS in the server settings. Other OpenAI-compatible servers use their own setup procedures. Ollama pull commands do not install models into those servers.</p>
-            </details>
-          </div>
-        </div>
+            <div id="autoOrganizeDelayRow" class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="autoOrganizeDelay">Auto-organize delay (seconds)</label>
+                <p class="setting-description">
+                  Choose a delay from 1 to 60 seconds.
+                </p>
+              </div>
+              <input type="number" id="autoOrganizeDelay" min="1" max="60" value="5" class="api-key-input" style="width: 4em;">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="closeDuplicateTabs">Close duplicate tabs</label>
+                <p class="setting-description">Turn off to keep every copy open when grouping or tidying tabs.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="closeDuplicateTabs">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <h3 class="subsection-title">If the provider fails</h3>
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Use fallback providers</label>
-            <p class="setting-description">
-              This setting is off by default. If enabled, the extension tries eligible providers in order after the preferred provider fails.
-              A local primary tries only the other local provider unless you also allow cloud fallback.
-            </p>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="aiFallbackEnabled">
-            <span class="slider"></span>
-          </label>
-        </div>
+          <details class="settings-disclosure">
+            <summary>Duplicate matching</summary>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="ignoreQuery">Ignore query parameters</label>
+                <p class="setting-description">
+                  When enabled, URLs with different query strings are treated as duplicates.
+                  <br><strong>Example:</strong> <code>example.com/?a=1</code> and <code>example.com/?b=2</code> are considered duplicates.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="ignoreQuery">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div class="setting-item" id="cloudFallbackRow">
-          <div class="setting-info">
-            <label class="setting-label">Allow server-based (cloud) fallbacks</label>
-            <p class="setting-description">
-              Also allow cloud providers with a saved API key after the local providers fail.
-              <br><strong>When this occurs, the AI data disclosure above applies.</strong> Leave this setting off to prevent cloud fallback.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="aiAllowCloudFallback">
-            <span class="slider"></span>
-          </label>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="ignoreHash">Ignore URL fragments</label>
+                <p class="setting-description">
+                  When enabled, URLs are compared without their hash/anchor, but the hash is still used to determine which tab to keep (highest anchor number).
+                  <br><strong>Example:</strong> <code>example.com/#comment-123</code> and <code>example.com/#comment-456</code> are duplicates, but the one with #comment-456 is kept.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="ignoreHash">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div class="setting-item setting-item--stacked" id="fallbackOrderItem">
-          <div class="setting-info">
-            <label class="setting-label">Fallback order</label>
-            <p class="setting-description">
-              When a fallback is needed, eligible providers are tried in this order. Your preferred provider always goes first, wherever it sits in the list.
-              Greyed-out entries are currently skipped — the tag says why.
-            </p>
-          </div>
-          <ul id="fallbackOrderList" class="fallback-order-list"></ul>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="reloadTabs">Reload remaining tabs</label>
+                <p class="setting-description">
+                  When enabled, remaining tabs will be automatically reloaded after closing duplicates.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="reloadTabs">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </details>
+          <details class="settings-disclosure" id="advanced-grouping">
+            <summary>Grouping rules and toolbar behaviour</summary>
+            <div id="custom-instructions" class="setting-item setting-item--stacked">
+              <div class="setting-info">
+                <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>
+                <p class="setting-description">
+                  Provide custom instructions for how tabs should be organized (e.g., "group by domain", "group by topic", "prioritize work-related tabs").
+                  <br>These instructions will be used when organizing tabs from the options page.
+                </p>
+              </div>
+              <textarea id="customInstructionsOptions" class="custom-instructions-textarea" placeholder="e.g., 'group by domain' or 'group by topic'" rows="3"></textarea>
+            </div>
 
-        <p id="aiFallbackHint" class="fallback-hint"></p>
+            <div class="setting-item setting-item--stacked">
+              <div class="setting-info">
+                <label class="setting-label" for="excludedDomains">Never organize these domains</label>
+                <p class="setting-description">
+                  One domain per line. Matching tabs are never sent to AI — not even as sample titles — and are never grouped, ungrouped, reordered, or moved by organization.
+                  <br><code>youtube.com</code> also matches subdomains such as <code>music.youtube.com</code>, and a trailing dot such as <code>youtube.com.</code> is treated as the same host. Full URLs and a leading <code>*.</code> are accepted; lines starting with <code>#</code> are ignored.
+                </p>
+              </div>
+              <textarea id="excludedDomains" class="custom-instructions-textarea" placeholder="youtube.com&#10;mail.google.com" rows="3" spellcheck="false"></textarea>
+            </div>
 
-        <h3 class="subsection-title">Organisation behaviour</h3>
-        <div id="custom-instructions" class="setting-item setting-item--stacked">
-          <div class="setting-info">
-            <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>
-            <p class="setting-description">
-              Provide custom instructions for how tabs should be organized (e.g., "group by domain", "group by topic", "prioritize work-related tabs").
-              <br>These instructions will be used when organizing tabs from the options page.
-            </p>
-          </div>
-          <textarea id="customInstructionsOptions" class="custom-instructions-textarea" placeholder="e.g., 'group by domain' or 'group by topic'" rows="3"></textarea>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="preserveGroups">Preserve existing groups</label>
+                <p class="setting-description">
+                  When enabled, tabs that are already in groups will be skipped during organization.
+                  <br>When disabled, all tabs will be reorganized into new groups.
+                  <br><strong>Pinned tabs and groups named "BOOKMARKS" and "PRs" are always preserved</strong>, regardless of this setting.
+                </p>
+                <p id="preserveGroupsRefineNote" class="setting-warning" style="display: none;">
+                  Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="preserveGroups">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div class="setting-item setting-item--stacked">
-          <div class="setting-info">
-            <label class="setting-label" for="excludedDomains">Never organize these domains</label>
-            <p class="setting-description">
-              One domain per line. Matching tabs are never sent to AI — not even as sample titles — and are never grouped, ungrouped, reordered, or moved by organization.
-              <br><code>youtube.com</code> also matches subdomains such as <code>music.youtube.com</code>, and a trailing dot such as <code>youtube.com.</code> is treated as the same host. Full URLs and a leading <code>*.</code> are accepted; lines starting with <code>#</code> are ignored.
-            </p>
-          </div>
-          <textarea id="excludedDomains" class="custom-instructions-textarea" placeholder="youtube.com&#10;mail.google.com" rows="3" spellcheck="false"></textarea>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Preserve existing groups</label>
-            <p class="setting-description">
-              When enabled, tabs that are already in groups will be skipped during organization.
-              <br>When disabled, all tabs will be reorganized into new groups.
-              <br><strong>Pinned tabs and groups named "BOOKMARKS" and "PRs" are always preserved</strong>, regardless of this setting.
-            </p>
-            <p id="preserveGroupsRefineNote" class="setting-warning" style="display: none;">
-              Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="preserveGroups">
-            <span class="slider"></span>
-          </label>
-        </div>
+            <div id="preserveGroupsMinTabsRow" class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="preserveGroupsMinTabs">Only preserve groups with more than N tabs</label>
+                <p class="setting-description">
+                  When set, only groups that have <strong>more than N</strong> tabs are preserved. Groups with N tabs or fewer are ungrouped and sent through AI organization again.
+                  <br>AI will also never create a new group with N or fewer tabs; such tabs go into Misc.
+                  <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved; groups with 1–2 tabs are re-organized, and new groups have at least 3 tabs.
+                </p>
+                <p id="preserveGroupsMinTabsWarning" class="setting-warning" role="alert" style="display: none;">
+                  This feature may not work well if the number is higher than 3.
+                </p>
+              </div>
+              <input type="number" id="preserveGroupsMinTabs" min="0" max="20" value="1" class="api-key-input" style="width: 4em;">
+            </div>
 
-        <div id="preserveGroupsMinTabsRow" class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="preserveGroupsMinTabs">Only preserve groups with more than N tabs</label>
-            <p class="setting-description">
-              When set, only groups that have <strong>more than N</strong> tabs are preserved. Groups with N tabs or fewer are ungrouped and sent through AI organization again.
-              <br>AI will also never create a new group with N or fewer tabs; such tabs go into Misc.
-              <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved; groups with 1–2 tabs are re-organized, and new groups have at least 3 tabs.
-            </p>
-            <p id="preserveGroupsMinTabsWarning" class="setting-warning" role="alert" style="display: none;">
-              This feature may not work well if the number is higher than 3.
-            </p>
-          </div>
-          <input type="number" id="preserveGroupsMinTabs" min="0" max="20" value="1" class="api-key-input" style="width: 4em;">
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Merge tabs into existing groups</label>
-            <p class="setting-description">
-              When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
-              <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
-              <br><strong>Pinned tabs and the "BOOKMARKS" group are always preserved</strong>; these options apply to other groups only.
-            </p>
-            <p id="mergeIntoExistingRefineNote" class="setting-warning" style="display: none;">
-              Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="mergeIntoExisting">
-            <span class="slider"></span>
-          </label>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="mergeIntoExisting">Merge tabs into existing groups</label>
+                <p class="setting-description">
+                  When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
+                  <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
+                  <br><strong>Pinned tabs and the "BOOKMARKS" group are always preserved</strong>; these options apply to other groups only.
+                </p>
+                <p id="mergeIntoExistingRefineNote" class="setting-warning" style="display: none;">
+                  Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="mergeIntoExisting">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="refineExistingGroups">Refine existing groups</label>
-            <p class="setting-description">
-              Keep your groups, but move tabs that clearly don't belong to a better group. Groups are never renamed; only emptied groups disappear.
-              <br>When enabled, tabs in your groups and your group names are sent to AI, and "Preserve existing groups" and "Merge tabs into existing groups" are ignored. The minimum group size still applies to new groups.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="refineExistingGroups">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Sort tabs within groups by title</label>
-            <p class="setting-description">
-              When enabled, after organization, tabs inside each group are ordered alphabetically by page title (A–Z).
-              <br><strong>BOOKMARKS</strong> and <strong>PRs</strong> groups are not reordered. A group containing a tab from your excluded domains also keeps its current order.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="sortTabsWithinGroupsByTitle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Organize tabs on extension icon click</label>
-            <p class="setting-description">
-              When enabled, clicking the extension icon will deduplicate tabs AND organize them using AI.
-              <br>When disabled, the extension icon deduplicates tabs and applies your pinned-tab list (default behavior).
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="organizeOnClick">
-            <span class="slider"></span>
-          </label>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="refineExistingGroups">Refine existing groups</label>
+                <p class="setting-description">
+                  Keep your groups, but move tabs that clearly don't belong to a better group. Groups are never renamed; only emptied groups disappear.
+                  <br>When enabled, tabs in your groups and your group names are sent to AI, and "Preserve existing groups" and "Merge tabs into existing groups" are ignored. The minimum group size still applies to new groups.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="refineExistingGroups">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label">Automatically organize when opening new tabs</label>
-            <p class="setting-description">
-              When enabled, tabs will be automatically organized after you open a new tab.
-              <br>The organization runs after the configured delay. Opening more tabs during the delay resets the timer.
-              <br><strong>Disabled by default</strong> to avoid unexpected AI calls and costs.
-            </p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="autoOrganizeEnabled">
-            <span class="slider"></span>
-          </label>
-        </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="sortTabsWithinGroupsByTitle">Sort tabs within groups by title</label>
+                <p class="setting-description">
+                  When enabled, after organization, tabs inside each group are ordered alphabetically by page title (A–Z).
+                  <br><strong>BOOKMARKS</strong> and <strong>PRs</strong> groups are not reordered. A group containing a tab from your excluded domains also keeps its current order.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="sortTabsWithinGroupsByTitle">
+                <span class="slider"></span>
+              </label>
+            </div>
 
-        <div id="autoOrganizeDelayRow" class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="autoOrganizeDelay">Auto-organize delay (seconds)</label>
-            <p class="setting-description">
-              Time to wait after opening a new tab before organizing. Opening more tabs resets the timer.
-              <br>Range: 1-60 seconds. Default: 5 seconds.
-            </p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="organizeOnClick">Group tabs when you click the toolbar icon</label>
+                <p class="setting-description">
+                  Adds AI grouping when you click the extension icon. Duplicate removal follows the setting above.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="organizeOnClick">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </details>
+        </section>
+
+        <section id="ai-settings" data-settings-view aria-labelledby="ai-heading" hidden>
+          <h2 id="ai-heading">AI models</h2>
+          <p class="section-description">Choose where tab titles and addresses are processed.</p>
+
+          <div class="privacy-notice" role="note">
+            <strong>AI data disclosure:</strong> AI organization sends tab titles, URLs without query parameters or fragments, custom instructions, and relevant group names to the selected provider. If fallback is enabled, each attempted provider can receive the same data. A provider can receive the prompt even when its request fails. URL paths can contain private information. Provider terms control API costs and retention.
           </div>
-          <input type="number" id="autoOrganizeDelay" min="1" max="60" value="5" class="api-key-input" style="width: 4em;">
-        </div>
-      </section>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="aiProvider">AI provider</label>
+              <p class="setting-description">Applies to both manual and automatic grouping.</p>
+            </div>
+            <select id="aiProvider" class="provider-select">
+              <option value="openai">OpenAI (cloud)</option>
+              <option value="claude">Claude (cloud)</option>
+              <option value="gemini">Gemini (cloud)</option>
+              <option value="chrome-ai">Chrome built-in AI (on-device)</option>
+              <option value="local">Local model server — Ollama / LM Studio</option>
+              <option value="custom-openai">OpenAI Compatible API Host</option>
+            </select>
+          </div>
+
+          <div id="selectedProvider" class="selected-provider"></div>
+          <details class="settings-disclosure">
+            <summary>Configure other providers</summary>
+            <div id="otherProviders" class="provider-grid">
+              <div class="provider-card" data-provider="chrome-ai">
+                <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
+                <p class="provider-card-desc">Gemini Nano, running inside Chrome itself. Chrome downloads the model (a few GB) once; after that it works fully offline.</p>
+                <div class="local-model-buttons">
+                  <button type="button" id="checkChromeAiBtn" class="btn btn-secondary">Check availability</button>
+                  <button type="button" id="downloadChromeAiBtn" class="btn btn-secondary" hidden>Download model</button>
+                </div>
+                <div id="chromeAiStatus" class="status"></div>
+                <details class="setup-notes">
+                  <summary>Requirements &amp; notes</summary>
+                  <p>Chrome 138+ requires about 22 GB of free disk space and an unmetered connection for the first download. GPU use requires more than 4 GB of VRAM. CPU use requires at least 16 GB of RAM and four CPU cores. Gemini Nano is smaller than cloud models, so the extension organizes tabs in batches of 20.</p>
+                </details>
+              </div>
+
+              <div class="provider-card" data-provider="local">
+                <div class="provider-card-header">Local model server <span class="primary-badge">Primary</span></div>
+                <p class="provider-card-desc">Use oMLX, Ollama, LM Studio, or another compatible server on this device. Leave fields blank to use the defaults shown.</p>
+                <label class="field-label" for="localBaseUrl">Server address</label>
+                <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false" title="localhost, 127.0.0.1, or a private-network address such as http://192.168.1.20:11434/v1">
+                <label class="field-label" for="localModelChoices">Choose a model</label>
+                <select id="localModelChoices" class="provider-select" aria-describedby="localModelSuggestion localModelStatus"></select>
+                <label class="field-label" for="localModel">Model name</label>
+                <input type="text" id="localModel" class="api-key-input" placeholder="Select an installed model or enter its exact name" spellcheck="false">
+                <div class="local-model-buttons">
+                  <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection / Refresh models</button>
+                </div>
+                <div id="localModelStatus" class="status" role="status"></div>
+                <p class="model-recommended-hint" id="localModelSuggestion"></p>
+                <p class="model-recommended-hint"><a id="localModelSource" href="https://ollama.com/library/qwen2.5:1.5b" target="_blank" rel="noopener noreferrer">Official model details and license</a></p>
+                <details class="setup-notes" id="localModelSetup">
+                  <summary>Ollama setup commands and suggestion sources</summary>
+                  <p>These small-model suggestions use official Ollama specifications, reviewed November 16, 2026. They are starting points, not benchmark winners for tab grouping. Download sizes are approximate, not RAM requirements. Suggestions update with extension releases.</p>
+                  <ol>
+                    <li>Install Ollama from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">the official download page</a>.</li>
+                    <li>For a foreground server, quit any existing Ollama app or service first. Choose your terminal below.</li>
+                  </ol>
+                  <label class="field-label" for="localSetupShell">Terminal</label>
+                  <select id="localSetupShell" class="provider-select">
+                    <option value="posix">macOS / Linux shell</option>
+                    <option value="powershell">Windows PowerShell</option>
+                  </select>
+                  <p>Run this command in one terminal. Keep that terminal open. The command allows only this extension's origin.</p>
+                  <pre class="setup-command"><code id="localServeCommand"></code></pre>
+                  <p>In another terminal, download the suggested model:</p>
+                  <pre class="setup-command"><code id="localPullCommand"></code></pre>
+                  <p>Then select <strong>Test connection / Refresh models</strong>. Choose the model from the installed group to make it active. The extension never runs these commands.</p>
+                  <p>For the macOS app instead of a foreground server, run this command, then quit and reopen Ollama:</p>
+                  <pre class="setup-command"><code id="localMacCommand"></code></pre>
+                  <p>Linux services and the Windows app need persistent environment settings. See the <a href="https://docs.ollama.com/faq#how-do-i-configure-ollama-server" target="_blank" rel="noopener noreferrer">Ollama server setup guide</a>. Keep the default loopback binding. Do not expose the server to the internet.</p>
+                  <p>In LM Studio, enable CORS in the server settings. Other OpenAI-compatible servers use their own setup procedures. Ollama pull commands do not install models into those servers.</p>
+                </details>
+              </div>
+              <div class="provider-card" data-provider="openai">
+                <div class="provider-card-header">OpenAI <span class="primary-badge">Primary</span></div>
+                <label class="field-label" for="openaiKey">API key <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
+                <div class="input-with-toggle">
+                  <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
+                  <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+                </div>
+                <label class="field-label" for="openaiModel">Model</label>
+                <select id="openaiModel" class="provider-select" aria-describedby="openaiModelRecommended"></select>
+                <p class="model-recommended-hint" id="openaiModelRecommended"></p>
+              </div>
+
+              <div class="provider-card" data-provider="claude">
+                <div class="provider-card-header">Claude <span class="primary-badge">Primary</span></div>
+                <label class="field-label" for="claudeKey">API key <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
+                <div class="input-with-toggle">
+                  <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
+                  <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+                </div>
+                <label class="field-label" for="claudeModel">Model</label>
+                <select id="claudeModel" class="provider-select" aria-describedby="claudeModelRecommended"></select>
+                <p class="model-recommended-hint" id="claudeModelRecommended"></p>
+              </div>
+
+              <div class="provider-card" data-provider="gemini">
+                <div class="provider-card-header">Gemini <span class="primary-badge">Primary</span></div>
+                <label class="field-label" for="geminiKey">AI Studio authorization key <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
+                <div class="input-with-toggle">
+                  <input type="password" id="geminiKey" class="api-key-input" placeholder="Authorization key">
+                  <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+                </div>
+                <label class="field-label" for="geminiModel">Model</label>
+                <select id="geminiModel" class="provider-select" aria-describedby="geminiModelRecommended"></select>
+                <p class="model-recommended-hint" id="geminiModelRecommended"></p>
+              </div>
+
+              <div class="provider-card" data-provider="custom-openai">
+                <div class="provider-card-header">OpenAI Compatible <span class="primary-badge">Primary</span></div>
+                <p class="provider-card-desc">Connect to any provider that implements the OpenAI-compatible API, such as OpenRouter, Together AI, or a self-hosted server.</p>
+                <label class="field-label" for="customOpenaiBaseUrl">Base URL</label>
+                <input type="text" id="customOpenaiBaseUrl" class="api-key-input" placeholder="https://api.example.com/v1" spellcheck="false">
+                <label class="field-label" for="customOpenaiKey">API key <span class="field-label-optional">(optional)</span></label>
+                <div class="input-with-toggle">
+                  <input type="password" id="customOpenaiKey" class="api-key-input" placeholder="sk-...">
+                  <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+                </div>
+                <label class="field-label" for="customOpenaiModel">Model name</label>
+                <input type="text" id="customOpenaiModel" class="api-key-input" placeholder="e.g. meta-llama/Llama-3-70b-chat-hf" list="customOpenaiModels" spellcheck="false" autocomplete="off">
+                <datalist id="customOpenaiModels"></datalist>
+                <div class="local-model-buttons">
+                  <button type="button" id="testCustomOpenaiBtn" class="btn btn-secondary">Fetch models</button>
+                </div>
+                <div id="customOpenaiStatus" class="status"></div>
+              </div>
+            </div>
+          </details>
+          <details class="settings-disclosure">
+            <summary>Fallback settings</summary>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="aiFallbackEnabled">Use fallback providers</label>
+                <p class="setting-description">
+                  This setting is off by default. If enabled, the extension tries eligible providers in order after the preferred provider fails.
+                  A local primary tries only the other local provider unless you also allow cloud fallback.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="aiFallbackEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item" id="cloudFallbackRow">
+              <div class="setting-info">
+                <label class="setting-label" for="aiAllowCloudFallback">Allow cloud fallbacks</label>
+                <p class="setting-description">
+                  Also allow cloud providers with a saved API key after the local providers fail.
+                  <br><strong>When this occurs, the AI data disclosure above applies.</strong> Leave this setting off to prevent cloud fallback.
+                </p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="aiAllowCloudFallback">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item setting-item--stacked" id="fallbackOrderItem">
+              <div class="setting-info">
+                <label class="setting-label">Fallback order</label>
+                <p class="setting-description">
+                  When a fallback is needed, eligible providers are tried in this order. Your preferred provider always goes first, wherever it sits in the list.
+                  Greyed-out entries are currently skipped — the tag says why.
+                </p>
+              </div>
+              <ul id="fallbackOrderList" class="fallback-order-list"></ul>
+            </div>
+
+            <p id="aiFallbackHint" class="fallback-hint"></p>
+
+          </details>
+        </section>
+
+        <section id="pinned-tabs" data-settings-view aria-labelledby="pinned-heading" hidden>
+          <h2 id="pinned-heading">Pinned tabs</h2>
+          <p class="section-description">Define which URLs should be pinned. When you tidy pinned tabs, any pinned tab outside this list will be unpinned, and matching tabs will be pinned and ordered. Leave the list empty to keep your current pins.</p>
+
+          <div class="setting-item setting-item--stacked">
+            <div class="setting-info">
+              <label class="setting-label" for="pinnedUrls">Pinned URLs (one per line, order = tab order)</label>
+              <details class="setup-notes">
+                <summary>URL rule examples</summary>
+                <p class="setting-description"><strong>Exact match</strong> (no prefix): only that exact URL stays pinned (after normalizing query/hash per your duplicate settings).<br>
+                <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays pinned. For example, <code>*https://mail.example.com/</code> keeps all sample mail pages, and <code>*https://app.example.com/workspace/demo</code> keeps all pages in the sample workspace.<br>
+                <strong>Soft (only when already open):</strong> start with <code>~</code> so the tab is only pinned when it already exists in the window; the extension never opens it. Use <code>~*https://...</code> for soft prefix or <code>~https://...</code> for soft exact. Example: <code>~*https://app.example.com/workspace/demo</code> keeps the sample workspace pinned only when it is already open. Leave empty to keep all currently pinned tabs as-is when tidying.</p>
+              </details>
+            </div>
+            <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.example.com/&#10;*https://app.example.com/workspace/demo&#10;https://docs.example.com/start&#10;*https://chat.example.com/" rows="5"></textarea>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="bookmarksGroupColor">BOOKMARKS group colour</label>
+              <p class="setting-description">Colour for the BOOKMARKS tab group. Applied whenever you run dedupe/tidy so the group keeps this colour.</p>
+            </div>
+            <select id="bookmarksGroupColor" class="provider-select">
+              <option value="yellow">Yellow</option>
+              <option value="green">Green</option>
+              <option value="blue">Blue</option>
+              <option value="red">Red</option>
+              <option value="pink">Pink</option>
+              <option value="purple">Purple</option>
+              <option value="cyan">Cyan</option>
+              <option value="orange">Orange</option>
+              <option value="grey">Grey</option>
+            </select>
+          </div>
+          <button id="tidyPinnedBtn" class="btn btn-primary">Tidy pinned tabs</button>
+        </section>
+
+        <section id="github-groups" data-settings-view aria-labelledby="github-heading" hidden>
+          <h2 id="github-heading">GitHub tab groups</h2>
+          <p class="section-description">These optional features use your GitHub token to maintain tab groups. The token stays in local storage and goes only to GitHub. Label-group colours come from these settings, not from GitHub label colours. Managed groups appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.</p>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="githubToken">GitHub personal access token</label>
+              <p class="setting-description">
+                The extension uses this token to fetch open pull requests, issue states, and label names. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
+                <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener noreferrer">github.com/settings/tokens</a>
+              </p>
+            </div>
+            <div class="input-with-toggle">
+              <input type="password" id="githubToken" class="api-key-input" placeholder="ghp_...">
+              <button type="button" class="toggle-password" aria-label="Show token" title="Show token"><span class="eye-icon" aria-hidden="true"></span></button>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="prGroupEnabled">Enable PR tab group</label>
+              <p class="setting-description">
+                When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. It opens missing tabs for matching PRs from GitHub. Each dedupe or organize action refreshes this group first. Tabs that no longer match an open PR leave the group but remain open. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
+              </p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="prGroupEnabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="prGroupColor">PRs group colour</label>
+              <p class="setting-description">Colour for the <strong>PRs</strong> tab group. Applied whenever the group is refreshed.</p>
+            </div>
+            <select id="prGroupColor" class="provider-select">
+              <option value="blue">Blue</option>
+              <option value="red">Red</option>
+              <option value="yellow">Yellow</option>
+              <option value="green">Green</option>
+              <option value="pink">Pink</option>
+              <option value="purple">Purple</option>
+              <option value="cyan">Cyan</option>
+              <option value="orange">Orange</option>
+              <option value="grey">Grey</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <button id="refreshPrGroupBtn" class="btn btn-secondary">Refresh PR group</button>
+            <p class="setting-description" style="margin-top: 0.5em;">Refresh the <strong>PRs</strong> group now. Dedupe and organize actions also refresh it when the feature is enabled.</p>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="githubLabelGroupsEnabled">Enable GitHub issue label groups</label>
+              <p class="setting-description">When enabled, the extension groups GitHub issue tabs by the label names below.</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="githubLabelGroupsEnabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item" id="githubLabelGroupsOnClickRow">
+            <div class="setting-info">
+              <label class="setting-label" for="githubLabelGroupsOnClick">Refresh label groups on toolbar click</label>
+              <p class="setting-description">Runs label-group sync after deduplication when you click the extension icon. Manual refresh remains available.</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="githubLabelGroupsOnClick">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item setting-item--stacked">
+            <div class="setting-info">
+              <label class="setting-label" for="githubLabelGroupNames">GitHub issue label names</label>
+              <p class="setting-description" id="githubLabelGroupNamesHelp">
+                Enter one exact GitHub label name on each line. Each label gets a Chrome colour selector. The top-to-bottom order sets the matching priority and tab-strip order. Matching is exact and ignores letter case. The first match wins. The <strong>Closed</strong> group wins when its feature is enabled. Pinned and split-view tabs remain unchanged.
+              </p>
+            </div>
+            <textarea id="githubLabelGroupNames" class="github-label-groups-textarea" rows="6" aria-describedby="githubLabelGroupNamesHelp githubLabelGroupNamesWarning" spellcheck="false" placeholder="bug&#10;help wanted"></textarea>
+            <p id="githubLabelGroupNamesWarning" class="github-label-groups-warning" role="status" hidden></p>
+            <div id="githubLabelGroupColors" class="github-label-group-colors" aria-label="GitHub issue label group colours"></div>
+          </div>
+
+          <div class="setting-item">
+            <button id="refreshGithubLabelGroupsBtn" class="btn btn-secondary">Refresh label groups</button>
+            <p class="setting-description" style="margin-top: 0.5em;">Refresh the labels for open GitHub issue tabs.</p>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="closedIssueGroupEnabled">Move closed issues to a Closed group</label>
+              <p class="setting-description">
+                When enabled, each dedupe or organize action checks GitHub issue tabs in the current window. The extension moves each closed issue into <strong>Closed</strong>. Pinned and split-view tabs remain unchanged.
+              </p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="closedIssueGroupEnabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <button id="refreshClosedIssueGroupBtn" class="btn btn-secondary">Refresh Closed group</button>
+            <p class="setting-description" style="margin-top: 0.5em;">Check the GitHub issue tabs in the current window now.</p>
+          </div>
+        </section>
+
+      </main>
     </div>
-    
+
     <footer>
-      <p>Settings are automatically saved in extension-local storage.</p>
+      <p>Settings save on this device.</p>
       <p class="footer-links">
         <a href="https://github.com/twisterdotcom/smart-tab-organiser/blob/main/PRIVACY_POLICY.md" target="_blank" rel="noopener noreferrer">Privacy policy</a>
-        <span aria-hidden="true">·</span>
-        <a href="https://github.com/twisterdotcom/smart-tab-organiser/issues" target="_blank" rel="noopener noreferrer">Support</a>
       </p>
     </footer>
   </div>
