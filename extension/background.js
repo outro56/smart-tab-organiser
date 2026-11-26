@@ -1,5 +1,5 @@
 // Firefox loads these dependencies before this script through its manifest.
-if (typeof importScripts === 'function') importScripts('ai-models.js', 'host-access.js');
+if (typeof importScripts === 'function') importScripts('ai-models.js', 'host-access.js', 'review-providers.js');
 
 const isFirefox = chrome.runtime.getURL('').startsWith('moz-extension:');
 const ollamaOrigins = isFirefox ? 'moz-extension://*' : 'chrome-extension://*';
@@ -821,7 +821,7 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
       'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting'
     ]);
     // Refresh PRs first so dedupe keeps the managed PR copy. Refresh issue groups after dedupe.
-    const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+    const githubPrSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
       includePr: true,
       includeIssues: false,
       includeLabelGroups: options.includeLabelGroups !== false,
@@ -832,7 +832,7 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
     const dedupeResult = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
     if (!dedupeResult.success) throw new Error(dedupeResult.error || 'Duplicate removal failed');
     await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
-    const githubIssueSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+    const githubIssueSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
       includePr: false,
       includeIssues: true,
       includeLabelGroups: options.includeLabelGroups !== false,
@@ -927,7 +927,7 @@ async function runDedupeAndTidyPinned(windowId, options = {}) {
     const settings = await chrome.storage.local.get([
       'ignoreQuery', 'ignoreHash', 'reloadTabs'
     ]);
-    const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+    const githubPrSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
       includePr: true,
       includeIssues: false,
       includeLabelGroups: options.includeLabelGroups !== false,
@@ -940,7 +940,7 @@ async function runDedupeAndTidyPinned(windowId, options = {}) {
       throw new Error(dedupeResult.error || 'Duplicate removal failed');
     }
     const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
-    await syncEnabledGitHubTabGroups(targetWindowId, {
+    await syncEnabledReviewAndIssueGroups(targetWindowId, {
       includePr: false,
       includeIssues: true,
       includeLabelGroups: options.includeLabelGroups !== false,
@@ -2101,40 +2101,46 @@ async function fetchOpenPrUrls(githubToken) {
   }
 }
 
-// Build a canonical GitHub PR URL for matching: github.com/owner/repo/pull/number.
 function normalizedPrUrl(rawUrl, ignoreQuery, ignoreHash) {
-  if (!isValidUrl(rawUrl)) return null;
+  const url = globalThis.ReviewProviders.canonicalUrl(rawUrl);
+  return url ? normalizeUrl(url.href, ignoreQuery !== false, ignoreHash !== false) : null;
+}
+
+const prSyncsByWindow = new Map();
+
+async function syncPrTabGroup(windowId, presentationOptions = {}) {
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const pending = prSyncsByWindow.get(targetWindowId);
+  const sync = Promise.resolve(pending).catch(() => {}).then(() =>
+    syncPrTabs(targetWindowId, presentationOptions)
+  );
+  prSyncsByWindow.set(targetWindowId, sync);
   try {
-    const url = new URL(rawUrl);
-    const hostname = url.hostname.toLowerCase();
-    if (hostname !== 'github.com' && hostname !== 'www.github.com') return null;
-
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (parts.length < 4 || parts[2].toLowerCase() !== 'pull' || !/^\d+$/.test(parts[3])) {
-      return null;
-    }
-
-    url.hostname = 'github.com';
-    url.pathname = `/${parts.slice(0, 4).join('/')}`;
-    return normalizeUrl(url.toString(), ignoreQuery !== false, ignoreHash !== false);
-  } catch {
-    return null;
+    return await sync;
+  } finally {
+    if (prSyncsByWindow.get(targetWindowId) === sync) prSyncsByWindow.delete(targetWindowId);
   }
 }
 
-// Create or get PR tab group in window; sync tabs to match prUrls. Returns { success, message?, error? }.
-async function syncPrTabGroup(windowId, presentationOptions = {}) {
+async function syncPrTabs(windowId, presentationOptions) {
   const settings = await chrome.storage.local.get([
-    'githubToken', 'prGroupEnabled', 'prGroupColor', 'ignoreQuery', 'ignoreHash'
+    'prProvider', 'githubToken', 'gitlabToken', 'azureDevOpsToken', 'azureDevOpsOrganization',
+    'azureDevOpsProject', 'prGroupColor', 'ignoreQuery', 'ignoreHash'
   ]);
-  if (!settings.githubToken?.trim()) {
-    return { success: false, error: 'GitHub token not set' };
+  const provider = globalThis.ReviewProviders.getProvider(settings.prProvider);
+  if (provider.permission && !await hasOriginPermission(provider.permission)) {
+    return { success: false, error: 'Select Refresh PR group in Code reviews to grant access to ' + provider.name + '.' };
   }
-  const targetWindowId = await resolveTargetWindowId(windowId);
-  const win = await chrome.windows.get(targetWindowId);
+  const win = await chrome.windows.get(windowId);
   const prGroupColor = normalizeTabGroupColor(settings.prGroupColor, 'blue');
-  const { prUrls, error: fetchError } = await fetchOpenPrUrls(settings.githubToken);
+  const { prUrls, error: fetchError } = provider.id === 'github'
+    ? await fetchOpenPrUrls(settings.githubToken)
+    : await globalThis.ReviewProviders.listUrls(provider, settings);
   if (fetchError) return { success: false, error: fetchError };
+  const current = await chrome.storage.local.get(['prProvider']);
+  if (globalThis.ReviewProviders.getProvider(current.prProvider).id !== provider.id) {
+    return { success: false, error: 'Review provider changed. Refresh the PR group again.' };
+  }
   if (prUrls.length === 0) {
     // Clear the managed group without closing the user's tabs.
     const groups = await chrome.tabGroups.query({ windowId: win.id });
@@ -2208,7 +2214,7 @@ async function syncPrTabGroup(windowId, presentationOptions = {}) {
     }
     // Prefer a tab elsewhere in the window with this URL (never pull from a split view)
     const sameUrlTab = tabsWithUrls.find(t => {
-      if (!t.url || !isValidUrl(t.url) || isInSplitView(t)) return false;
+      if (!t.url || !isValidUrl(t.url) || t.pinned || isInSplitView(t)) return false;
       const tNorm = normalizedPrUrl(t.url, ignoreQuery, ignoreHash);
       return tNorm === norm && !usedTabIds.has(t.id);
     });
@@ -2227,7 +2233,7 @@ async function syncPrTabGroup(windowId, presentationOptions = {}) {
       continue;
     }
     // Create new tab
-    const newTab = await chrome.tabs.create({ url: prUrl, windowId: win.id });
+    const newTab = await chrome.tabs.create({ url: prUrl, windowId: win.id, active: false });
     if (prGroupId == null) {
       prGroupId = await chrome.tabs.group({
         tabIds: [newTab.id],
@@ -2757,12 +2763,12 @@ async function dedupeAndSyncGitHubLabelTabGroups(windowId) {
   };
 }
 
-async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
+async function syncEnabledReviewAndIssueGroups(windowId, stages = {}) {
   const includePr = stages.includePr !== false;
   const includeIssues = stages.includeIssues !== false;
   const includeLabelGroups = stages.includeLabelGroups !== false;
   const settings = await chrome.storage.local.get([
-    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+    'githubToken', 'prProvider', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
     'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
   ]);
   const targetWindowId = await resolveTargetWindowId(windowId);
@@ -2795,36 +2801,37 @@ async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
     return { warnings: [], stopRemainingSyncs: true, preservedTabIds: Array.from(preservedTabIds) };
   }
 
-  if (!settings.githubToken?.trim()) {
-    warnings.push('Add a GitHub token in the extension settings.');
-    stopRemainingSyncs = true;
-    if (issuesEnabled) await preserveCurrentIssueTabs();
-  } else {
-    const runSync = async (label, sync) => {
-      try {
-        const result = await sync();
-        for (const tabId of result?.preservedTabIds || []) preservedTabIds.add(tabId);
-        if (result?.success === false) {
-          const error = result.error || 'refresh failed';
-          warnings.push(`${label}: ${error}`);
-          return /invalid or expired github token|rate limit|github api error: 429|failed to fetch/i.test(error);
-        }
-        if (result?.warning) warnings.push(`${label}: ${result.warning}`);
-        return false;
-      } catch (error) {
-        const message = error.message || 'refresh failed';
-        warnings.push(`${label}: ${message}`);
-        return /authentication|unauthorized|rate limit|failed to fetch/i.test(message);
+  const runSync = async (label, sync) => {
+    try {
+      const result = await sync();
+      for (const tabId of result?.preservedTabIds || []) preservedTabIds.add(tabId);
+      if (result?.success === false) {
+        const error = result.error || 'refresh failed';
+        warnings.push(`${label}: ${error}`);
+        return /github token|rate limit|github api error: 429|failed to fetch/i.test(error);
       }
-    };
-
-    if (prEnabled) {
-      stopRemainingSyncs = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(windowId, {
-        includeLabelGroups: presentLabelGroups,
-      }));
+      if (result?.warning) warnings.push(`${label}: ${result.warning}`);
+      return false;
+    } catch (error) {
+      const message = error.message || 'refresh failed';
+      warnings.push(`${label}: ${message}`);
+      return /authentication|unauthorized|rate limit|failed to fetch/i.test(message);
     }
-    if (issuesEnabled && !stopRemainingSyncs) {
-      stopRemainingSyncs = await runSync('GitHub issues', () => syncGitHubIssueTabGroups(windowId, {
+  };
+
+  if (prEnabled) {
+    const prFailed = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(targetWindowId, {
+      includeLabelGroups: presentLabelGroups,
+    }));
+    stopRemainingSyncs = prFailed && globalThis.ReviewProviders.getProvider(settings.prProvider).id === 'github';
+  }
+  if (issuesEnabled && !stopRemainingSyncs) {
+    if (!settings.githubToken?.trim()) {
+      warnings.push('Add a GitHub token to refresh issue groups.');
+      stopRemainingSyncs = true;
+      await preserveCurrentIssueTabs();
+    } else {
+      stopRemainingSyncs = await runSync('GitHub issues', () => syncGitHubIssueTabGroups(targetWindowId, {
         closedIssueGroupEnabled: closedIssuesEnabled,
         githubLabelGroupsEnabled: labelGroupsEnabled,
       }));
@@ -2833,11 +2840,11 @@ async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
 
   if (warnings.length > 0) {
     const uniqueWarnings = Array.from(new Set(warnings));
-    console.warn('GitHub tab group refresh warnings:', uniqueWarnings);
+    console.warn('Code review and issue group refresh warnings:', uniqueWarnings);
     await chrome.notifications.create('github-sync-warning', {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-      title: 'GitHub tab groups not fully refreshed',
+      title: 'Code reviews or issue groups not fully refreshed',
       message: uniqueWarnings.join('\n')
     });
     return {
@@ -4944,7 +4951,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
       try {
         const targetWindowId = await resolveTargetWindowId(request.windowId);
-        const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        const githubPrSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
           includePr: true,
           includeIssues: false,
         }).catch(() => ({ stopRemainingSyncs: false }));
@@ -4958,7 +4965,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
           targetWindowId
         );
         if (!dedupeResult.success) return dedupeResult;
-        const githubIssueSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        const githubIssueSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
           includePr: false,
           includeIssues: true,
           blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
@@ -5005,7 +5012,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'dedupeAndTidyPinned') {
     (async () => {
       const targetWindowId = await resolveTargetWindowId(request.windowId);
-      const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+      const githubPrSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
         includePr: true,
         includeIssues: false,
       }).catch(() => ({ stopRemainingSyncs: false }));
@@ -5016,7 +5023,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       const dedupeResult = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
       if (!dedupeResult.success) return dedupeResult;
       const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
-      await syncEnabledGitHubTabGroups(targetWindowId, {
+      await syncEnabledReviewAndIssueGroups(targetWindowId, {
         includePr: false,
         includeIssues: true,
         blockedByEarlierSync: githubPrSync.stopRemainingSyncs,

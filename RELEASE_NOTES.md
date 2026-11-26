@@ -7,6 +7,7 @@
 - Added a **Close duplicate tabs** setting. Turn it off to keep duplicates open during automatic grouping and other tab actions.
 - Added a Firefox desktop build with support for local model servers.
 - Set the Firefox local AI defaults to oMLX and Qwen2.5 Coder.
+- Added GitLab.com merge requests and Azure DevOps Services pull requests to the PRs group options.
 - Added a toolbar-click setting for GitHub label-group sync.
 - Added Chrome colour selectors for each configured GitHub label and the PRs group.
 - Allowed plain HTTP to private-network hosts (`10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, IPv6 `fc00::/7` and `fe80::/10`) for both the local model server and a custom OpenAI-compatible host. Each such host still needs its own host access, requested once from Options or when organization starts from the toolbar.

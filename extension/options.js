@@ -185,6 +185,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const refreshClosedIssueGroupBtn = document.getElementById('refreshClosedIssueGroupBtn');
   const refreshGithubLabelGroupsBtn = document.getElementById('refreshGithubLabelGroupsBtn');
   const githubTokenInput = document.getElementById('githubToken');
+  const prProviderSelect = document.getElementById('prProvider');
+  const prProviderFields = document.querySelectorAll('[data-review-provider]');
+  const prProviderInputs = ['gitlabToken', 'azureDevOpsToken', 'azureDevOpsOrganization', 'azureDevOpsProject']
+    .map(id => document.getElementById(id));
   const prGroupEnabledCheckbox = document.getElementById('prGroupEnabled');
   const prGroupColorSelect = document.getElementById('prGroupColor');
   const closedIssueGroupEnabledCheckbox = document.getElementById('closedIssueGroupEnabled');
@@ -418,7 +422,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'excludedDomains', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
     'autoOrganizeEnabled', 'autoOrganizeDelay',
-    'githubToken', 'prGroupEnabled', 'prGroupColor', 'closedIssueGroupEnabled',
+    'githubToken', 'prProvider', ...prProviderInputs.map(input => input.id),
+    'prGroupEnabled', 'prGroupColor', 'closedIssueGroupEnabled',
     'githubLabelGroupsEnabled', 'githubLabelGroupsOnClick', 'githubLabelGroupNames', 'githubLabelGroupColors',
     'bookmarksGroupColor', 'localBaseUrl', 'localModel',
     'customOpenaiBaseUrl', 'customOpenaiKey', 'customOpenaiModel'
@@ -494,6 +499,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.githubToken) {
     githubTokenInput.value = settings.githubToken;
   }
+  prProviderSelect.value = globalThis.ReviewProviders.getProvider(settings.prProvider).id;
+  for (const input of prProviderInputs) input.value = settings[input.id] || '';
+  updatePrProviderFields();
   prGroupEnabledCheckbox.checked = settings.prGroupEnabled === true;
   prGroupColorSelect.value = normalizeChromeTabGroupColor(settings.prGroupColor) || 'blue';
   closedIssueGroupEnabledCheckbox.checked = settings.closedIssueGroupEnabled === true;
@@ -1098,6 +1106,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   githubTokenInput.addEventListener('input', () => {
     chrome.storage.local.set({ githubToken: githubTokenInput.value.trim() });
   });
+  function updatePrProviderFields() {
+    for (const field of prProviderFields) field.hidden = field.dataset.reviewProvider !== prProviderSelect.value;
+  }
+  prProviderSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ prProvider: prProviderSelect.value });
+    updatePrProviderFields();
+  });
+  for (const input of prProviderInputs) {
+    input.addEventListener('input', () => chrome.storage.local.set({ [input.id]: input.value.trim() }));
+  }
   prGroupEnabledCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ prGroupEnabled: prGroupEnabledCheckbox.checked });
   });
@@ -1130,6 +1148,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     actionStatus.textContent = 'Refreshing PR group...';
     actionStatus.className = 'status info';
     try {
+      const provider = globalThis.ReviewProviders.getProvider(prProviderSelect.value);
+      if (provider.permission && !await chrome.permissions.request({ origins: [provider.permission] })) {
+        throw new Error('Access to ' + provider.name + ' was declined.');
+      }
       const prGroupColor = normalizeChromeTabGroupColor(prGroupColorSelect.value) || 'blue';
       await chrome.storage.local.set({ prGroupColor });
       const result = await chrome.runtime.sendMessage({ action: 'syncPrTabGroup' });

@@ -1,6 +1,6 @@
 # Privacy Policy for Smart Tab Organiser
 
-**Last updated:** November 16, 2026
+**Last updated:** November 26, 2026
 
 ## Overview
 
@@ -34,13 +34,13 @@ The extension stores these values in `chrome.storage.local`:
 - Cached cloud model lists, refresh timestamps, and credential fingerprints
 - Custom AI instructions
 - Domains that AI organization must skip
-- Optional API keys and a GitHub token
+- Optional API keys and code review tokens
 
 The browser keeps these settings in storage that belongs to the extension. The extension does not synchronize them across devices.
 
 ### Authentication information
 
-API keys and the GitHub token are authentication information. The extension stores them in the user's browser profile until the user removes them or uninstalls the extension.
+API keys and code review tokens are authentication information. The extension stores them in the user's browser profile until the user removes them or uninstalls the extension.
 
 The extension sends a credential only to the service that issued it. The extension sends credentials in request headers, not in request URLs.
 
@@ -148,6 +148,10 @@ The issue-label feature uses the existing `api.github.com` host permission. It r
 
 GitHub processes requests under the [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
 
+### GitLab and Azure DevOps code reviews
+
+If you choose GitLab.com or Azure DevOps Services for the PR group, the extension requests access to that service when you select **Refresh PR group**. Each service receives only its own token. GitLab receives filters for open merge requests you authored or review. Azure DevOps receives the organization, project, and the account ID returned by Azure DevOps for the token. The extension uses the returned request IDs and URLs to open and group tabs in the browser.
+
 ## Data sharing
 
 The extension shares data only for the user-facing features described in this policy:
@@ -156,6 +160,7 @@ The extension shares data only for the user-facing features described in this po
 - With providers that have saved API keys when Settings refreshes their model lists
 - With a configured custom OpenAI-compatible host when the user tests that host or starts AI organization with it
 - With GitHub when the user enables or starts a GitHub group feature
+- With GitLab.com or Azure DevOps Services when the user configures and starts PR group refresh for that service
 - With a local model server when the user selects the local-model provider — on the same computer, or on the user's own network when they have granted host access for that host
 
 The extension does not sell user data. It does not use user data for advertising, credit decisions, or unrelated profiling.
@@ -182,7 +187,7 @@ The extension package contains all executable code. It does not download or exec
 | `notifications` | Show progress, results, and errors for user-started operations. |
 | `contextMenus` | Add tab-management commands to the extension action menu. |
 | AI API hosts | Send AI requests and refresh model lists for saved cloud keys in Settings. |
-| Optional host permission (`https://*/*`) | Allow runtime, origin-scoped HTTPS access for a configured custom OpenAI-compatible host after a user gesture. |
+| Optional host permission (`https://*/*`) | Allow origin-scoped HTTPS access for a configured custom AI host, GitLab.com, or Azure DevOps Services after a user gesture. |
 | Optional host permission (`http://*/*`) | Allow runtime, origin-scoped HTTP access to a private-network host on the user's own network (for example `192.168.1.20`) after a user gesture. Chrome match patterns cannot express a private range, so the request is scoped to the single origin the user typed. The extension requests this only for private-network hosts and never for a public `http://` host, including RFC 6598 `100.64.0.0/10`. Loopback HTTP uses the static `localhost` and `127.0.0.1` permissions above. |
 | `api.github.com` | Run optional GitHub PR, Closed, and issue-label group features. |
 | `localhost` and `127.0.0.1` | Contact an optional model server on the same computer. |

@@ -25,9 +25,21 @@ After editing `extension/`, reload the Chrome or Edge extension. For Firefox, re
 | Chrome with Gemini Nano | Select **Chrome built-in AI** and use **Check availability** to prepare the model. |
 | Other local servers | Enter the server address and exact model name. Use **Test connection / Refresh models** to see what the server offers. |
 
-Use a server on this computer and leave provider fallback and GitHub integrations off to keep tab data here. For cloud or GitHub features, see what data they use in the [privacy policy](PRIVACY_POLICY.md).
+Use a server on this computer and leave cloud fallback and code review integrations off to keep tab data here. See the [privacy policy](PRIVACY_POLICY.md).
 
-In **Grouping rules and toolbar behaviour**, set excluded sites, choose how to handle existing groups, or add AI grouping to the toolbar click. Use **Pinned tabs** to save URL rules. Use **GitHub** to group your open pull requests, review requests, and issue tabs.
+In **Grouping rules and toolbar behaviour**, set excluded sites or choose how to handle existing groups. Use **Pinned tabs** to save URL rules.
+
+## Group code reviews
+
+In **Code reviews**, choose a provider and select **Refresh PR group**. The extension opens missing requests you authored or are assigned to review in a **PRs** group. Requests that stop matching leave the group and stay open. Turn on **Enable PR tab group** to refresh it when you tidy or organize tabs.
+
+| Provider | What you need |
+| --- | --- |
+| GitHub | A token with access to the relevant repositories. |
+| GitLab.com | A personal access token with `read_api`. |
+| Azure DevOps Services | Organization and project names, plus an organization-scoped token with **Code (Read)**. |
+
+Issue labels and the **Closed** issue group use GitHub separately.
 
 ## Develop
 

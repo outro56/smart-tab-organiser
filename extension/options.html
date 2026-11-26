@@ -19,7 +19,7 @@
         <a href="#grouping" aria-current="page">Grouping</a>
         <a href="#ai-settings">AI models</a>
         <a href="#pinned-tabs">Pinned tabs</a>
-        <a href="#github-groups">GitHub</a>
+        <a href="#github-groups">Code reviews</a>
       </nav>
 
       <main class="content">
@@ -455,8 +455,33 @@
         </section>
 
         <section id="github-groups" data-settings-view aria-labelledby="github-heading" hidden>
-          <h2 id="github-heading">GitHub tab groups</h2>
-          <p class="section-description">These optional features use your GitHub token to maintain tab groups. The token stays in local storage and goes only to GitHub. Label-group colours come from these settings, not from GitHub label colours. Managed groups appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.</p>
+          <h2 id="github-heading">Code reviews</h2>
+          <p class="section-description">Keep open requests you authored or are assigned to review in a PRs tab group.</p>
+
+          <div class="setting-item">
+            <label class="setting-label" for="prProvider">Review provider</label>
+            <select id="prProvider" class="provider-select">
+              <option value="github">GitHub</option>
+              <option value="gitlab">GitLab.com</option>
+              <option value="azure">Azure DevOps Services</option>
+            </select>
+          </div>
+
+          <div class="setting-item setting-item--stacked" data-review-provider="gitlab" hidden>
+            <label class="setting-label" for="gitlabToken">GitLab personal access token</label>
+            <p class="setting-description">Use a GitLab.com token with the <code>read_api</code> scope.</p>
+            <input id="gitlabToken" type="password" class="api-key-input" autocomplete="off">
+          </div>
+
+          <div class="setting-item setting-item--stacked" data-review-provider="azure" hidden>
+            <label class="setting-label" for="azureDevOpsOrganization">Azure DevOps organization</label>
+            <input id="azureDevOpsOrganization" type="text" class="api-key-input" placeholder="my-organization" spellcheck="false">
+            <label class="setting-label" for="azureDevOpsProject">Project name or ID</label>
+            <input id="azureDevOpsProject" type="text" class="api-key-input" spellcheck="false">
+            <label class="setting-label" for="azureDevOpsToken">Azure DevOps personal access token</label>
+            <p class="setting-description">Use an organization-scoped token with <strong>Code (Read)</strong>.</p>
+            <input id="azureDevOpsToken" type="password" class="api-key-input" autocomplete="off">
+          </div>
 
           <div class="setting-item">
             <div class="setting-info">
@@ -476,7 +501,7 @@
             <div class="setting-info">
               <label class="setting-label" for="prGroupEnabled">Enable PR tab group</label>
               <p class="setting-description">
-                When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. It opens missing tabs for matching PRs from GitHub. Each dedupe or organize action refreshes this group first. Tabs that no longer match an open PR leave the group but remain open. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
+                Refresh the PRs group when you tidy or organize tabs. Missing requests open in background tabs. Older requests leave the group and stay open.
               </p>
             </div>
             <label class="switch">
@@ -505,7 +530,7 @@
 
           <div class="setting-item">
             <button id="refreshPrGroupBtn" class="btn btn-secondary">Refresh PR group</button>
-            <p class="setting-description" style="margin-top: 0.5em;">Refresh the <strong>PRs</strong> group now. Dedupe and organize actions also refresh it when the feature is enabled.</p>
+            <p class="setting-description">Refresh now. Firefox or Chrome may ask for access to the selected provider the first time.</p>
           </div>
 
           <div class="setting-item">
@@ -580,6 +605,7 @@
   <script src="cloud-model-discovery.js"></script>
   <script src="local-model-picker.js"></script>
   <script src="host-access.js"></script>
+  <script src="review-providers.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

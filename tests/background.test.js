@@ -15,6 +15,7 @@ const HOST_ACCESS_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'extension', 'host-access.js'),
   'utf8'
 );
+const REVIEW_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'review-providers.js'), 'utf8');
 const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'ai-models.js'), 'utf8');
 
 function eventStub() {
@@ -121,6 +122,8 @@ function loadBackground(extensionOrigin = 'chrome-extension://test') {
 
   const context = {
     AbortController,
+    URLSearchParams,
+    btoa,
     URL,
     chrome,
     clearInterval,
@@ -147,6 +150,7 @@ function loadBackground(extensionOrigin = 'chrome-extension://test') {
   vm.runInContext(MODEL_SOURCE, context, { filename: 'ai-models.js' });
   context.resolveStoredModel = (_provider, model) => model || 'test-model';
   vm.runInContext(HOST_ACCESS_SOURCE, context, { filename: 'host-access.js' });
+  vm.runInContext(REVIEW_SOURCE, context, { filename: 'review-providers.js' });
   vm.runInContext(BACKGROUND_SOURCE, context, { filename: 'background.js' });
   return { chrome, context };
 }
@@ -1367,6 +1371,130 @@ test('PR refresh ungroups only stale non-split PR tabs', async () => {
   assert.equal(prGroup.color, 'purple');
 });
 
+test('automatic GitLab review refresh groups authored and assigned MRs without a GitHub token', async () => {
+  const { chrome, context } = loadBackground();
+  const settings = { prProvider: 'gitlab', prGroupEnabled: true, gitlabToken: 'gitlab-test-token' };
+  const first = 'https://gitlab.com/team/platform/app/-/merge_requests/1';
+  const second = 'https://gitlab.com/team/platform/app/-/merge_requests/2';
+  const old = 'https://gitlab.com/team/platform/app/-/merge_requests/3';
+  const tabs = [
+    { id: 1, url: first + '/diffs?view=parallel', windowId: 7, groupId: -1 },
+    { id: 3, url: old, windowId: 7, groupId: 15 },
+  ];
+  const group = { id: 15, title: 'PRs', color: 'blue' };
+  const opened = [];
+  const scopes = [];
+
+  chrome.storage.local.get = async () => ({ ...settings });
+  chrome.permissions.contains = async request => request.origins[0] === 'https://gitlab.com/*';
+  chrome.tabGroups.query = async () => [group];
+  chrome.tabs.query = async query => tabs.filter(tab => query.groupId == null || tab.groupId === query.groupId);
+  chrome.tabs.create = async options => {
+    opened.push({ ...options });
+    const tab = { ...options, id: 2, groupId: -1 };
+    tabs.push(tab);
+    return tab;
+  };
+  chrome.tabs.group = async ({ groupId, tabIds }) => {
+    for (const tab of tabs) if (tabIds.includes(tab.id)) tab.groupId = groupId;
+    return groupId;
+  };
+  chrome.tabs.ungroup = async ids => {
+    for (const tab of tabs) if (ids.includes(tab.id)) tab.groupId = -1;
+  };
+  chrome.tabs.remove = async () => assert.fail('Refreshing a group must keep tabs open');
+  context.fetch = async (rawUrl, options) => {
+    const url = new URL(rawUrl);
+    assert.equal(url.origin + url.pathname, 'https://gitlab.com/api/v4/merge_requests');
+    assert.equal(options.headers['PRIVATE-TOKEN'], 'gitlab-test-token');
+    assert.equal(options.redirect, 'error');
+    assert.equal(url.searchParams.get('state'), 'opened');
+    const scope = url.searchParams.get('scope');
+    scopes.push(scope);
+    return {
+      ok: true,
+      json: async () => (scope === 'created_by_me' ? [first] : [first, second]).map(web_url => ({ web_url })),
+    };
+  };
+
+  const result = await context.syncEnabledReviewAndIssueGroups(7, { includeIssues: false });
+
+  assert.equal(result.warnings.length, 0);
+  assert.deepEqual(scopes, ['created_by_me', 'reviews_for_me']);
+  assert.deepEqual(opened, [{ url: second, windowId: 7, active: false }]);
+  assert.deepEqual(tabs.filter(tab => tab.groupId === 15).map(tab => tab.id), [1, 2]);
+  assert.ok(tabs.some(tab => tab.id === 3 && tab.groupId === -1));
+});
+
+test('Azure DevOps review refresh reuses a legacy URL and looks up the token account in the selected project', async () => {
+  const { chrome, context } = loadBackground();
+  const userId = '12345678-1234-1234-1234-123456789abc';
+  const group = { id: 15, title: 'PRs', color: 'blue' };
+  const tab = {
+    id: 1, windowId: 5, groupId: 15,
+    url: 'https://my-org.visualstudio.com/Team%20Project/_git/tools/pullrequest/8?tab=files',
+  };
+  const requests = [];
+  chrome.storage.local.get = async () => ({
+    prProvider: 'azure', azureDevOpsOrganization: 'my-org',
+    azureDevOpsProject: 'Team Project', azureDevOpsToken: 'azure-test-token',
+  });
+  chrome.tabGroups.query = async () => [group];
+  chrome.tabs.query = async () => [tab];
+  chrome.tabs.create = async () => assert.fail('Reusing an existing review must not open another tab');
+  chrome.tabs.ungroup = async () => assert.fail('The legacy URL should remain in PRs');
+  context.fetch = async (rawUrl, options) => {
+    const url = new URL(rawUrl);
+    assert.equal(url.origin, 'https://dev.azure.com');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa(':azure-test-token'));
+    if (url.pathname === '/my-org/_apis/connectionData') {
+      requests.push('identity');
+      return { ok: true, json: async () => ({ authenticatedUser: { id: userId } }) };
+    }
+    assert.equal(url.pathname, '/my-org/Team%20Project/_apis/git/pullrequests');
+    assert.equal(url.searchParams.get('searchCriteria.status'), 'active');
+    const filter = url.searchParams.has('searchCriteria.creatorId') ? 'creatorId' : 'reviewerId';
+    assert.equal(url.searchParams.get('searchCriteria.' + filter), userId);
+    requests.push(filter);
+    return { ok: true, json: async () => ({ value: [
+      { pullRequestId: 8, repository: { name: 'tools', project: { name: 'Team Project' } } },
+    ] }) };
+  };
+
+  const result = await context.syncPrTabGroup(5);
+
+  assert.equal(result.success, true);
+  assert.match(result.message, /1 PR/);
+  assert.deepEqual(requests, ['identity', 'creatorId', 'reviewerId']);
+});
+
+test('a denied host grant or failed GitLab review lookup leaves the group alone', async () => {
+  const { chrome, context } = loadBackground();
+  chrome.storage.local.get = async () => ({ prProvider: 'gitlab', gitlabToken: 'gitlab-test-token' });
+  chrome.tabs.create = async () => assert.fail('A failed refresh must not open a tab');
+  chrome.tabs.ungroup = async () => assert.fail('A failed refresh must not change the group');
+  chrome.permissions.contains = async () => false;
+  context.fetch = async () => assert.fail('A denied grant must block the request');
+
+  const denied = await context.syncPrTabGroup(7);
+  assert.equal(denied.success, false);
+  assert.match(denied.error, /grant access to GitLab/);
+
+  chrome.permissions.contains = async () => true;
+  context.fetch = async rawUrl => {
+    if (new URL(rawUrl).searchParams.get('scope') === 'reviews_for_me') {
+      return { ok: false, status: 403 };
+    }
+    return { ok: true, json: async () => [
+      { web_url: 'https://gitlab.com/team/project/-/merge_requests/1' },
+    ] };
+  };
+
+  const failed = await context.syncPrTabGroup(7);
+  assert.equal(failed.success, false);
+  assert.match(failed.error, /403/);
+});
+
 test('configured GitHub label colors are validated and use distinct defaults', () => {
   const { context } = loadBackground();
   const colors = context.resolveGitHubLabelGroupColors({
@@ -1443,7 +1571,7 @@ test('the toolbar label gate leaves Closed and manual label sync available', asy
     return { success: true, preservedTabIds: [] };
   };
 
-  await context.syncEnabledGitHubTabGroups(1, {
+  await context.syncEnabledReviewAndIssueGroups(1, {
     includePr: false,
     includeIssues: true,
     includeLabelGroups: false,
@@ -1460,7 +1588,7 @@ test('the toolbar label gate leaves Closed and manual label sync available', asy
     prCalls.push({ windowId, presentationOptions });
     return { success: true };
   };
-  await context.syncEnabledGitHubTabGroups(1, {
+  await context.syncEnabledReviewAndIssueGroups(1, {
     includePr: true,
     includeIssues: false,
     includeLabelGroups: false,

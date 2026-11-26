@@ -23,6 +23,7 @@ PACKAGE_FILES = (
     "cloud-model-discovery.js",
     "local-model-picker.js",
     "host-access.js",
+    "review-providers.js",
     "options.html",
     "options.css",
     "options.js",
@@ -133,7 +134,7 @@ def validate_manifest() -> tuple[dict[str, object], str]:
 def make_firefox_manifest(manifest: dict[str, object]) -> dict[str, object]:
     firefox = manifest.copy()
     firefox["options_ui"] = {"page": firefox.pop("options_page"), "open_in_tab": True}
-    firefox["background"] = {"scripts": ["ai-models.js", "host-access.js", "background.js"]}
+    firefox["background"] = {"scripts": ["ai-models.js", "host-access.js", "review-providers.js", "background.js"]}
     firefox["browser_specific_settings"] = {
         "gecko": {
             "id": "smart-tab-organiser@outro56",
@@ -187,7 +188,7 @@ def validate_remote_code() -> None:
     if re.search(r"@import\s+(?:url\()?\s*[\"']?https?://", css, re.IGNORECASE):
         fail("remote CSS import found in options.css")
 
-    for relative_path in ("background.js", "ai-models.js", "host-access.js", "options.js"):
+    for relative_path in ("background.js", "ai-models.js", "host-access.js", "review-providers.js", "options.js"):
         text = (EXTENSION / relative_path).read_text(encoding="utf-8")
         for pattern in REMOTE_JAVASCRIPT_PATTERNS:
             if pattern.search(text):
