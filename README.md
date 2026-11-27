@@ -9,9 +9,11 @@ Use the browser-specific path below. Build the Firefox ZIP with `python3 scripts
 | Browser | Installation |
 | --- | --- |
 | Chrome or Edge | Open `chrome://extensions` or `edge://extensions`, enable **Developer mode**, and **Load unpacked** from `extension/`. |
-| Firefox desktop 139+ | Open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose the ZIP in `dist/firefox/`. |
+| Firefox desktop 139+ | Download the signed XPI from [GitHub Releases](https://github.com/outro56/smart-tab-organiser/releases/latest). In `about:addons`, open the gear menu and choose **Install Add-on From File…**. |
 
-After editing `extension/`, reload the Chrome or Edge extension. For Firefox, rebuild the ZIP and reload the temporary add-on. Firefox removes the temporary add-on on restart. Permanent Firefox installs need [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). The build writes browser ZIPs to `dist/chrome/` and `dist/firefox/`.
+Install signed 1.3.3 or later once and keep Firefox's automatic add-on updates enabled. Firefox checks the fork for newer signed releases. To test a local build, open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose the ZIP in `dist/firefox/`. Firefox removes temporary add-ons on restart.
+
+For release maintainers, attach `smart-tab-organiser-firefox-vVERSION-signed.xpi` to the corresponding stable GitHub release before publishing it. Use the [Mozilla-signed XPI](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). The release workflow generates `firefox-updates.json` from that XPI. Firefox downloads this file from the latest release and verifies the XPI it names.
 
 ## Set up grouping
 

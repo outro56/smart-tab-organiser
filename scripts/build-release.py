@@ -139,6 +139,7 @@ def make_firefox_manifest(manifest: dict[str, object]) -> dict[str, object]:
     firefox["browser_specific_settings"] = {
         "gecko": {
             "id": "smart-tab-organiser@outro56",
+            "update_url": f"{manifest['homepage_url']}/releases/latest/download/firefox-updates.json",
             "strict_min_version": "139.0",
             "data_collection_permissions": {
                 "required": ["none"],

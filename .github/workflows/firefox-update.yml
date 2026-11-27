@@ -1,0 +1,32 @@
+name: Publish Firefox update feed
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'outro56/smart-tab-organiser' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Publish the update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          asset="smart-tab-organiser-firefox-${RELEASE_TAG}-signed.xpi"
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$RUNNER_TEMP" -- "$RELEASE_TAG"
+          feed="$RUNNER_TEMP/firefox-updates.json"
+          python3 scripts/build-firefox-update.py "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/$asset" --output "$feed"
+          if gh release view --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' -- "$RELEASE_TAG" | grep -Fxq firefox-updates.json; then
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern firefox-updates.json --output "$RUNNER_TEMP/current-feed.json" -- "$RELEASE_TAG"
+            cmp "$feed" "$RUNNER_TEMP/current-feed.json"
+          else
+            gh release upload --repo "$GITHUB_REPOSITORY" -- "$RELEASE_TAG" "$feed"
+          fi
