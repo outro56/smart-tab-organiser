@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.3.5
+
+- Preserve existing tab groups when a local model batch fails.
+- Keep matching topics together across batches, including topics with only one tab per batch. Use Misc for unmatched tabs when the model returns a valid empty result.
+- Split oversized requests and replies that hit the output limit. Preserve the output budget for other local models when their context window allows it.
+- Keep valid assignments from a mixed reply and reject replies that contain only invalid tab numbers.
+
 ## 1.3.4
 
 - Detect the local model’s context limit and split large tab lists into batches. Merge groups with matching names across batches.
