@@ -1210,7 +1210,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   } else if (info.menuItemId === 'expand-all-groups') {
     expandAllTabGroups();
   } else if (info.menuItemId === 'edit-extension-options') {
-    chrome.runtime.openOptionsPage();
+    return chrome.runtime.openOptionsPage().catch(error => {
+      console.error('[Smart Tab Organiser] Could not open settings:', error);
+    });
   }
 });
 

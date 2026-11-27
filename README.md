@@ -17,6 +17,8 @@ For release maintainers, attach `smart-tab-organiser-firefox-vVERSION-signed.xpi
 
 ## Set up grouping
 
+Right-click the extension icon and choose **Edit extension options** to open Settings. Use a regular Firefox window if the extension lacks private-window access.
+
 1. Open **Options → AI models** and choose a provider.
 2. In **Grouping**, select **Organize tabs now** or turn on **Group new tabs automatically**.
 3. Turn off **Close duplicate tabs** to keep every copy open. Use **Duplicate matching** to control how query parameters and URL fragments are compared.

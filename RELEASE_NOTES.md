@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.3.6
+
+- Document how to open Settings from the Firefox toolbar and log an error if Settings fails to open.
+
 ## 1.3.5
 
 - Preserve existing tab groups when a local model batch fails.

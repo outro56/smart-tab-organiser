@@ -158,6 +158,16 @@ function loadBackground(extensionOrigin = 'chrome-extension://test') {
   return { chrome, context };
 }
 
+test('the toolbar menu opens settings without organizing tabs', async () => {
+  const { chrome, context } = loadBackground('moz-extension://test');
+  let settingsOpened = 0;
+  chrome.runtime.openOptionsPage = async () => { settingsOpened++; };
+  context.runOrganizeFromUserGesture = () => assert.fail('Opening settings must not start grouping');
+
+  await chrome.contextMenus.onClicked.emit({ menuItemId: 'edit-extension-options' }, { windowId: 1 });
+  assert.equal(settingsOpened, 1);
+});
+
 test('AI URLs exclude credentials, query parameters, and fragments', () => {
   const { context } = loadBackground();
 
