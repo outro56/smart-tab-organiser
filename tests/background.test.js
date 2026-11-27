@@ -2696,6 +2696,64 @@ function makeTab(id, groupId, title, url, extra = {}) {
   return { id, windowId: 1, index: id, title, url, groupId, pinned: false, splitViewId: -1, ...extra };
 }
 
+for (const entry of ['settings', 'toolbar']) {
+  test(`the ${entry} reorganize action refines only its window and keeps saved settings`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { refineExistingGroups: false, preserveGroups: true, closeDuplicateTabs: false },
+      tabs: [
+        makeTab(1, 10, 'Contract brief', 'https://example.com/brief'),
+        makeTab(2, 10, 'Garden notes', 'https://example.com/garden'),
+        makeTab(3, 20, 'Garden plan', 'https://example.com/plan'),
+        makeTab(4, 20, 'Garden seeds', 'https://example.com/seeds'),
+        makeTab(5, 30, 'Other window', 'https://example.com/other', { windowId: 2 }),
+      ],
+      groups: [{ id: 10, title: 'Contracts' }, { id: 20, title: 'Garden' }, { id: 30, title: 'Separate' }],
+    });
+    world.chrome.windows.getCurrent = async () => ({ id: 2 });
+    const savedWrites = [];
+    world.chrome.storage.local.set = async values => { savedWrites.push(values); };
+    world.respondWith([
+      { groupName: 'Contracts', tabIndices: [1] },
+      { groupName: 'Garden', tabIndices: [2, 3, 4] },
+    ]);
+
+    if (entry === 'settings') {
+      const sendMessage = world.chrome.runtime.onMessage.listeners[0];
+      const result = await new Promise(resolve => sendMessage({
+        action: 'organizeTabs', preserveGroups: true, refineOnce: true,
+      }, { tab: { windowId: 1 } }, resolve));
+      assert.equal(result.success, true);
+      assert.equal(result.refined, true);
+    } else {
+      await world.chrome.contextMenus.onClicked.emit({ menuItemId: 'reorganize-window' }, { windowId: 1 });
+    }
+
+    assert.match(world.prompt, /\[Contracts\] "Garden notes"/);
+    assert.doesNotMatch(world.prompt, /Other window/);
+    assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 20, 20, 20, 30]);
+    assert.deepEqual(savedWrites, []);
+  });
+}
+
+test('the reload action still refreshes tabs with their current group membership', async () => {
+  const world = setupOrganizeWorld({
+    tabs: [
+      makeTab(1, 10, 'Dashboard', 'https://example.com/dashboard'),
+      makeTab(2, -1, 'Status', 'https://example.com/status'),
+      makeTab(3, 20, 'Other window', 'https://example.com/other', { windowId: 2 }),
+    ],
+    groups: [{ id: 10, title: 'Work' }, { id: 20, title: 'Separate' }],
+  });
+  const reloaded = [];
+  world.chrome.tabs.reload = async id => { reloaded.push(id); };
+  const sendMessage = world.chrome.runtime.onMessage.listeners[0];
+  const result = await new Promise(resolve => sendMessage({ action: 'reloadAllTabs', windowId: 1 }, {}, resolve));
+
+  assert.equal(result.reloadedCount, 2);
+  assert.deepEqual(reloaded, [1, 2]);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, -1, 20]);
+});
+
 test('later local batches keep named groups when the model also assigns those tabs to Misc', async () => {
   const world = setupOrganizeWorld({
     settings: { aiProvider: 'local', localModel: 'test-model' },

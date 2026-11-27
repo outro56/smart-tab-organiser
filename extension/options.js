@@ -275,6 +275,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const autoOrganizeDelayInput = document.getElementById('autoOrganizeDelay');
   const autoOrganizeDelayRow = document.getElementById('autoOrganizeDelayRow');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
+  const reorganizeWindowBtn = document.getElementById('reorganizeWindowBtn');
   const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
   const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
@@ -1485,10 +1486,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Organize tabs button
-  organizeTabsBtn.addEventListener('click', async () => {
+  async function organizeWindow({ refineOnce = false } = {}) {
     organizeTabsBtn.disabled = true;
-    actionStatus.textContent = 'Deduplicating and organizing tabs with AI...';
+    reorganizeWindowBtn.disabled = true;
+    actionStatus.textContent = refineOnce ? 'Refining groups in this window...' : 'Deduplicating and organizing tabs with AI...';
     actionStatus.className = 'status info';
 
     try {
@@ -1523,7 +1524,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         preserveGroups,
         preserveGroupsMinTabs,
         mergeIntoExisting,
-        customInstructions
+        customInstructions,
+        refineOnce
       });
 
       if (result.success) {
@@ -1550,8 +1552,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       actionStatus.className = 'status error';
     } finally {
       organizeTabsBtn.disabled = false;
+      reorganizeWindowBtn.disabled = false;
     }
-  });
+  }
+
+  organizeTabsBtn.addEventListener('click', () => organizeWindow());
+  reorganizeWindowBtn.addEventListener('click', () => organizeWindow({ refineOnce: true }));
 
   // Deduplicate and tidy pinned tabs button
   tidyPinnedBtn.addEventListener('click', async () => {

@@ -756,6 +756,11 @@ chrome.runtime.onInstalled.addListener((details) => {
       contexts: ['action']
     });
     chrome.contextMenus.create({
+      id: 'reorganize-window',
+      title: 'Reorganize this window',
+      contexts: ['action']
+    });
+    chrome.contextMenus.create({
       id: 'reload-all-tabs',
       title: 'Reload all tabs',
       contexts: ['action']
@@ -864,7 +869,8 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
       customInstructions,
       preserveGroupsMinTabs,
       targetWindowId,
-      githubIssueSync.preservedTabIds
+      githubIssueSync.preservedTabIds,
+      { refineOnce: options.refineOnce }
     );
     chrome.notifications.clear('organize-progress');
     if (!result.success) {
@@ -1214,6 +1220,8 @@ async function expandAllTabGroups() {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'dedupe-and-organize') {
     runOrganizeFromUserGesture(tab?.windowId);
+  } else if (info.menuItemId === 'reorganize-window') {
+    return runOrganizeFromUserGesture(tab?.windowId, { refineOnce: true });
   } else if (info.menuItemId === 'reload-all-tabs') {
     reloadAllTabs(tab?.windowId);
   } else if (info.menuItemId === 'collapse-all-groups') {
@@ -4814,7 +4822,8 @@ async function organizeTabs(
   customInstructions,
   preserveGroupsMinTabs = 1,
   windowId,
-  additionalPreservedTabIds = []
+  additionalPreservedTabIds = [],
+  { refineOnce = false } = {}
 ) {
   try {
     const minTabs = parseMinTabs(preserveGroupsMinTabs);
@@ -4829,7 +4838,7 @@ async function organizeTabs(
       'excludedDomains', 'refineExistingGroups', 'uniqueGroupNames', 'limitGroupsPerWindow', 'maxGroupsPerWindow'
     ]);
     const excludedDomains = parseExcludedDomains(settings.excludedDomains);
-    const refine = settings.refineExistingGroups === true;
+    const refine = refineOnce || settings.refineExistingGroups === true;
     const mergeDuplicateNames = settings.uniqueGroupNames !== false;
     const maxGroups = getWindowGroupLimit(settings);
 
@@ -5110,7 +5119,7 @@ async function ungroupTabs() {
 }
 
 // Handle messages from extension pages.
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'reloadAllTabs') {
     reloadAllTabs(request.windowId)
       .then(result => sendResponse(result))
@@ -5139,7 +5148,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       isOrganizing = true;
 
       try {
-        const targetWindowId = await resolveTargetWindowId(request.windowId);
+        const targetWindowId = await resolveTargetWindowId(request.windowId ?? sender?.tab?.windowId);
         const githubPrSync = await syncEnabledReviewAndIssueGroups(targetWindowId, {
           includePr: true,
           includeIssues: false,
@@ -5169,7 +5178,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
           parseMinTabs(minTabsRaw),
           targetWindowId,
           githubIssueSync.preservedTabIds,
-          true // This path starts from a click, so Chrome allows the host prompt.
+          { refineOnce: request.refineOnce === true }
         );
         await reconcileManagedTabGroupsSafely(targetWindowId);
         return result;

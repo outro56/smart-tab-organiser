@@ -21,6 +21,8 @@ Right-click the extension icon and choose **Edit extension options** to open Set
 2. In **Grouping**, select **Organize tabs now** or turn on **Group new tabs automatically**.
 3. Turn off **Close duplicate tabs** to keep every copy open. Use **Duplicate matching** to control how query parameters and URL fragments are compared.
 
+Use **More actions → Reorganize this window**, or the matching toolbar menu item, to refine existing groups once with your saved provider and grouping rules.
+
 | On-device setup | Configuration |
 | --- | --- |
 | Firefox with oMLX | Start oMLX and install `Qwen2.5-Coder-1.5B-4bit`. In **Local model server**, blank fields use that model at `http://127.0.0.1:8000/v1`. |

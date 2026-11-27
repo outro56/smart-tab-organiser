@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.3.8
+
+- Add **Reorganize this window** to **More actions** and the toolbar menu. It refines existing groups for one run and keeps your saved settings.
+
 ## 1.3.7
 
 - Reuse groups with matching names and merge existing duplicates within each window.
