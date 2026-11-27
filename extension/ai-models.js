@@ -130,11 +130,7 @@
 
   g.formatModelOptionLabel = function (model, provider) {
     var recommended = g.getRecommendedModelId(provider);
-    var text = model.description ? model.label + ' (' + model.description + ')' : model.label;
-    if (model.id === recommended) {
-      return text + ' — Recommended';
-    }
-    return text;
+    return model.id === recommended ? model.label + ' — Recommended' : model.label;
   };
 
   g.populateModelSelect = function (selectEl, provider, selectedId) {
@@ -142,7 +138,7 @@
     var models = g.listModelsForProvider(provider);
     var resolved = g.resolveStoredModel(provider, selectedId);
     if (resolved && !models.some(function (model) { return model.id === resolved; })) {
-      models.unshift({ id: resolved, label: resolved, description: 'Saved selection; availability not checked' });
+      models.unshift({ id: resolved, label: resolved + ' — Saved selection' });
     }
     selectEl.textContent = '';
     for (var i = 0; i < models.length; i++) {
@@ -154,13 +150,5 @@
     }
     selectEl.value = resolved;
     return resolved;
-  };
-
-  g.describeRecommendedModel = function (provider) {
-    var id = g.getRecommendedModelId(provider);
-    if (!id) return '';
-    var entry = g.findModelEntry(provider, id);
-    if (!entry) return id;
-    return entry.label + (entry.description ? ' (' + entry.description + ')' : '');
   };
 })(globalThis);

@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { webcrypto } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -126,6 +127,7 @@ function loadBackground(extensionOrigin = 'chrome-extension://test') {
     btoa,
     URL,
     chrome,
+    crypto: webcrypto,
     clearInterval,
     clearTimeout,
     console: {
@@ -1495,6 +1497,38 @@ test('a denied host grant or failed GitLab review lookup leaves the group alone'
   assert.match(failed.error, /403/);
 });
 
+test('review connection tests verify the current credentials even with an empty queue and leave tabs alone', async () => {
+  const { chrome, context } = loadBackground();
+  const storage = { gitlabToken: 'fixture-token' };
+  const key = 'reviewConnectionCheck-gitlab';
+  chrome.storage.local.get = async () => ({ ...storage });
+  chrome.storage.local.set = async values => Object.assign(storage, values);
+  chrome.tabs.query = async () => assert.fail('A connection test must not look at tabs');
+  chrome.tabs.create = async () => assert.fail('A connection test must not open tabs');
+  const scopes = [];
+  context.fetch = async (url, { headers }) => {
+    assert.equal(headers['PRIVATE-TOKEN'], 'fixture-token');
+    scopes.push(new URL(url).searchParams.get('scope'));
+    return { ok: true, json: async () => [] };
+  };
+  const sendMessage = request => new Promise(resolve => chrome.runtime.onMessage.listeners[0](request, {}, resolve));
+
+  const connected = await sendMessage({ action: 'testReviewConnection', provider: 'gitlab' });
+
+  assert.equal(connected.success, true);
+  assert.deepEqual(scopes, ['created_by_me', 'reviews_for_me']);
+  assert.match(storage[key].fingerprint, /^[0-9a-f]{64}$/);
+  assert.ok(storage[key].updatedAt > 0);
+  assert.ok(!JSON.stringify(storage[key]).includes(storage.gitlabToken));
+
+  context.fetch = async () => ({ ok: false, status: 401 });
+  const rejected = await sendMessage({ action: 'testReviewConnection', provider: 'gitlab' });
+
+  assert.equal(rejected.success, false);
+  assert.match(rejected.error, /401/);
+  assert.equal(storage[key], null);
+});
+
 test('configured GitHub label colors are validated and use distinct defaults', () => {
   const { context } = loadBackground();
   const colors = context.resolveGitHubLabelGroupColors({
@@ -1539,8 +1573,8 @@ test('toolbar click passes the label-group sync preference to either click mode'
   const calls = [];
   let settings = { organizeOnClick: false, githubLabelGroupsOnClick: false };
   chrome.storage.local.get = async () => ({ ...settings });
-  context.runDedupeAndTidyPinned = async (windowId, options) => calls.push({ mode: 'tidy', windowId, options });
-  context.runOrganizeWithFeedback = async (windowId, options) => calls.push({ mode: 'organize', windowId, options });
+  context.runDedupeAndTidyPinned = async (windowId, options) => { calls.push({ mode: 'tidy', windowId, options }); };
+  context.runOrganizeWithFeedback = async (windowId, options) => { calls.push({ mode: 'organize', windowId, options }); };
 
   await chrome.action.onClicked.emit({ windowId: 7 });
   assert.equal(calls[0].mode, 'tidy');
@@ -1552,6 +1586,34 @@ test('toolbar click passes the label-group sync preference to either click mode'
   assert.equal(calls[1].mode, 'organize');
   assert.equal(calls[1].windowId, 8);
   assert.equal(calls[1].options.includeLabelGroups, true);
+});
+
+test('Firefox toolbar gives visible feedback for a no-op and an unsuccessful grouping run', async () => {
+  const { chrome, context } = loadBackground('moz-extension://test');
+  const toolbar = {};
+  let expire;
+  chrome.action.setBadgeText = async ({ text }) => { toolbar.text = text; };
+  chrome.action.setTitle = async ({ title }) => { toolbar.title = title; };
+  context.setTimeout = callback => { expire = callback; return 1; };
+  context.clearTimeout = () => {};
+  context.countDuplicates = async () => 0;
+  chrome.storage.local.get = async () => ({ organizeOnClick: false });
+  context.runDedupeAndTidyPinned = async () => ({ success: true, message: 'Nothing to tidy.' });
+
+  await chrome.action.onClicked.emit({ windowId: 1 });
+
+  assert.deepEqual(toolbar, { text: '✓', title: 'Nothing to tidy.' });
+  await context.updateBadge();
+  assert.equal(toolbar.text, '✓');
+  expire();
+  await context.updateBadge();
+  assert.equal(toolbar.text, '');
+
+  chrome.storage.local.get = async () => ({ organizeOnClick: true });
+  context.runOrganizeFromUserGesture = async () => ({ success: false, error: 'Start the local model server.' });
+  await chrome.action.onClicked.emit({ windowId: 1 });
+
+  assert.deepEqual(toolbar, { text: '!', title: 'Start the local model server.' });
 });
 
 test('the toolbar label gate leaves Closed and manual label sync available', async () => {
@@ -2409,6 +2471,98 @@ function setupOrganizeWorld({ settings, tabs, groups }) {
 function makeTab(id, groupId, title, url, extra = {}) {
   return { id, windowId: 1, index: id, title, url, groupId, pinned: false, splitViewId: -1, ...extra };
 }
+
+for (const refine of [false, true]) {
+  const mode = refine ? 'refine' : 'organize';
+
+  test(`${mode} keeps a lone Misc tab ungrouped even when the model lists it twice`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { refineExistingGroups: refine },
+      tabs: ['Doc one', 'Doc two', 'Recipe'].map((title, index) =>
+        makeTab(index + 1, -1, title, `https://example.com/${index}`)
+      ),
+      groups: [],
+    });
+    world.respondWith([
+      { groupName: 'Docs', tabIndices: [1, 2] },
+      { groupName: ' Misc ', tabIndices: [3, 3] },
+    ]);
+
+    const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+    assert.equal(result.success, true);
+    assert.equal(result.groupedCount, 2);
+    assert.deepEqual(world.groups.map(group => group.title), ['Docs']);
+    assert.equal(world.tabs[2].groupId, -1);
+  });
+
+  test(`${mode} can add a lone leftover tab to a preserved Misc group`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { refineExistingGroups: refine },
+      tabs: [
+        makeTab(1, 10, 'Recipes', 'https://example.com/recipes'),
+        makeTab(2, 10, 'Maps', 'https://example.com/maps'),
+        makeTab(3, -1, 'News', 'https://example.com/news'),
+      ],
+      groups: [{ id: 10, title: 'Misc', color: 'grey' }],
+    });
+    world.respondWith([{ groupName: 'Misc', tabIndices: refine ? [1, 2, 3] : [1] }]);
+
+    const result = await world.context.organizeTabs(true, true, '', 1, 1);
+
+    assert.equal(result.success, true);
+    assert.equal(result.groupCount, 0);
+    assert.equal(world.tabs[2].groupId, 10);
+  });
+}
+
+test('group names are unique by default and a saved opt-out keeps duplicates', async () => {
+  for (const enabled of [undefined, false]) {
+    const world = setupOrganizeWorld({
+      settings: enabled === undefined ? {} : { uniqueGroupNames: enabled },
+      tabs: [10, 10, 20, 20, -1, -1].map((groupId, index) =>
+        makeTab(index + 1, groupId, `Tab ${index}`, `https://example.com/${index}`)
+      ),
+      groups: [
+        { id: 10, title: 'Work', color: 'blue' },
+        { id: 20, title: 'Work (2)', color: 'green' },
+      ],
+    });
+    world.respondWith([{ groupName: 'work', tabIndices: [1, 2] }]);
+
+    const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+    assert.equal(result.success, true);
+    assert.equal(result.renamedGroupCount, enabled === false ? 0 : 1);
+    assert.deepEqual(world.groups.map(group => group.title), ['Work', 'Work (2)', enabled === false ? 'work' : 'work (3)']);
+  }
+});
+
+test('refine resolves existing and shortened name collisions while keeping groups separate', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true },
+    tabs: [10, 20, -1, -1, -1, -1].map((groupId, index) =>
+      makeTab(index + 1, groupId, `Tab ${index}`, `https://example.com/${index}`)
+    ),
+    groups: [
+      { id: 10, title: 'Work', color: 'blue' },
+      { id: 20, title: ' work ', color: 'green' },
+    ],
+  });
+  world.respondWith([
+    { groupName: 'Work', tabIndices: [1, 2] },
+    { groupName: 'Shared title prefix A', tabIndices: [3, 4] },
+    { groupName: 'Shared title prefix B', tabIndices: [5, 6] },
+  ]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.renamedGroupCount, 2);
+  assert.deepEqual(world.groups.map(group => group.title), ['Work', 'work (2)', 'Shared title prefix ', 'Shared title pre (2)']);
+  assert.equal(world.tabs[0].groupId, 10);
+  assert.equal(world.tabs[1].groupId, 20);
+});
 
 test('excluded domains parse lines, URLs, wildcards, and comments without matching lookalikes', () => {
   const { context } = loadBackground();

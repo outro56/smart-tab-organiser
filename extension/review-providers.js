@@ -7,13 +7,25 @@
   const GITLAB_ORIGIN = 'https://gitlab.com';
   const AZURE_ORIGIN = 'https://dev.azure.com';
   const providers = Object.freeze({
-    github: Object.freeze({ id: 'github', name: 'GitHub' }),
-    gitlab: Object.freeze({ id: 'gitlab', name: 'GitLab', permission: GITLAB_ORIGIN + '/*' }),
-    azure: Object.freeze({ id: 'azure', name: 'Azure DevOps', permission: AZURE_ORIGIN + '/*' }),
+    github: Object.freeze({ id: 'github', name: 'GitHub', fields: ['githubToken'] }),
+    gitlab: Object.freeze({ id: 'gitlab', name: 'GitLab', permission: GITLAB_ORIGIN + '/*', fields: ['gitlabToken'] }),
+    azure: Object.freeze({ id: 'azure', name: 'Azure DevOps', permission: AZURE_ORIGIN + '/*',
+      fields: ['azureDevOpsToken', 'azureDevOpsOrganization', 'azureDevOpsProject'] }),
   });
 
   function getProvider(id) {
     return Object.hasOwn(providers, id) ? providers[id] : providers.github;
+  }
+
+  function checkKey(provider) {
+    return `reviewConnectionCheck-${provider.id}`;
+  }
+
+  async function connectionFingerprint(provider, settings) {
+    const values = provider.fields.map(field => settings[field]?.trim() || '');
+    if (values.some(value => !value)) return null;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(values)));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
   }
 
   // Match detail pages and subordinate views such as an MR's Changes tab.
@@ -164,5 +176,5 @@
     }
   }
 
-  g.ReviewProviders = { getProvider, canonicalUrl, listUrls };
+  g.ReviewProviders = { getProvider, canonicalUrl, listUrls, checkKey, connectionFingerprint };
 })(globalThis);

@@ -7,10 +7,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const actionMenu = document.querySelector('.action-menu');
   const actionMenuSummary = actionMenu.querySelector('summary');
 
-  actionMenu.addEventListener('click', event => {
-    if (!event.target.closest('button')) return;
-    actionMenu.open = false;
-    actionMenuSummary.focus();
+  document.addEventListener('click', event => {
+    if (!actionMenu.open) return;
+    if (!actionMenu.contains(event.target)) {
+      actionMenu.open = false;
+    } else if (event.target.closest('button')) {
+      actionMenu.open = false;
+      actionMenuSummary.focus();
+    }
   });
   actionMenu.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || !actionMenu.open) return;
@@ -75,21 +79,100 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fallbackOrderList = document.getElementById('fallbackOrderList');
   const selectedProvider = document.getElementById('selectedProvider');
   const otherProviders = document.getElementById('otherProviders');
+  const otherProviderSelect = document.getElementById('otherProviderSelect');
   const providerCards = document.querySelectorAll('.provider-card[data-provider]');
+  const isFirefox = window.location.protocol === 'moz-extension:';
+  const providerLabels = new Map(Array.from(aiProviderSelect.options, option => [option.value, option.textContent]));
+  const checkedModels = new Map();
+  const providerModelInputs = {
+    openai: openaiModelSelect, claude: claudeModelSelect, gemini: geminiModelSelect,
+    'custom-openai': customOpenaiModelInput,
+  };
+  let chromeAiAvailable = false;
+  const MODEL_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
+
+  function localModelSettings() {
+    return globalThis.resolveLocalModelSettings({
+      localBaseUrl: localBaseUrlInput.value, localModel: localModelInput.value,
+    }, isFirefox);
+  }
+
+  function renderProviderChecks() {
+    for (const option of [...aiProviderSelect.options, ...otherProviderSelect.options]) {
+      const provider = option.value;
+      if (!provider) continue;
+      const model = provider === 'local' ? localModelSettings().model : providerModelInputs[provider]?.value.trim();
+      const verified = provider === 'chrome-ai' ? chromeAiAvailable : checkedModels.get(provider)?.has(model);
+      option.textContent = `${verified ? '✅ ' : ''}${providerLabels.get(provider)}`;
+    }
+  }
+
+  function setCheckedModels(provider, models) {
+    checkedModels.set(provider, new Set(models));
+    renderProviderChecks();
+  }
+
+  function recentlyChecked(updatedAt) {
+    const age = Date.now() - updatedAt;
+    return age >= 0 && age < MODEL_CACHE_MAX_AGE;
+  }
+
+  async function connectionFingerprint(value) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function trackServerModels(provider, connection) {
+    const cacheKey = `${provider}ConnectionCheck`;
+    let revision = 0;
+    return {
+      invalidate() {
+        revision++;
+        setCheckedModels(provider, []);
+      },
+      async restore() {
+        const startedAt = revision;
+        try {
+          const [fingerprint, stored] = await Promise.all([
+            connectionFingerprint(connection()), chrome.storage.local.get(cacheKey),
+          ]);
+          const cache = stored[cacheKey];
+          if (startedAt === revision && cache?.fingerprint === fingerprint && recentlyChecked(cache.updatedAt)) {
+            setCheckedModels(provider, cache.models);
+          }
+        } catch (error) {
+          // A live check can still confirm the provider if storage is unavailable.
+        }
+      },
+      async record(models) {
+        const startedAt = ++revision;
+        setCheckedModels(provider, models);
+        try {
+          const fingerprint = await connectionFingerprint(connection());
+          if (startedAt === revision) {
+            await chrome.storage.local.set({ [cacheKey]: { fingerprint, models, updatedAt: Date.now() } });
+          }
+        } catch (error) {
+          // The live result still applies to this settings page.
+        }
+      },
+    };
+  }
 
   function updateModelRecommendedHint(provider, hintEl, selectEl) {
     if (!hintEl || !selectEl) return;
     const recommendedId = globalThis.getRecommendedModelId(provider);
-    const isRecommended = selectEl.value === recommendedId;
-    hintEl.textContent = isRecommended
-      ? `Using the recommended model: ${globalThis.describeRecommendedModel(provider)}.`
-      : `Recommended: ${globalThis.describeRecommendedModel(provider)} (${recommendedId}).`;
+    const recommended = globalThis.findModelEntry(provider, recommendedId);
+    hintEl.textContent = selectEl.value === recommendedId
+      ? recommended?.description || ''
+      : `Recommended: ${recommended?.label || recommendedId}`;
   }
 
   function wireModelSelect(selectEl, provider, hintEl, storageKey) {
     selectEl.addEventListener('change', () => {
       chrome.storage.local.set({ [storageKey]: selectEl.value });
       updateModelRecommendedHint(provider, hintEl, selectEl);
+      renderProviderChecks();
     });
   }
 
@@ -102,20 +185,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     { provider: 'claude', input: claudeKeyInput, select: claudeModelSelect, hint: claudeModelRecommendedEl },
     { provider: 'gemini', input: geminiKeyInput, select: geminiModelSelect, hint: geminiModelRecommendedEl },
   ];
-  const MODEL_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
-
   async function refreshCloudModelList(control, force = false) {
     const generation = control.generation = (control.generation || 0) + 1;
     const key = control.input.value.trim();
     const isCurrent = () => control.generation === generation && control.input.value.trim() === key;
     control.button.disabled = true;
     control.status.textContent = key ? 'Checking model list…' : 'Add an API key to discover models.';
+    let previousCatalog;
+    const cacheKey = `${control.provider}ModelCatalog`;
     try {
       if (!key) return;
       // Bind cached availability to the credential without storing a second copy of the key.
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
-      const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-      const cacheKey = `${control.provider}ModelCatalog`;
+      const fingerprint = await connectionFingerprint(key);
       const stored = await chrome.storage.local.get(cacheKey);
       const cache = stored[cacheKey];
       const usable = cache && cache.fingerprint === fingerprint &&
@@ -126,10 +207,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateModelRecommendedHint(control.provider, control.hint, control.select);
       };
       if (!isCurrent()) return;
-      if (usable) render(cache.models);
-      if (!force && usable && Date.now() >= cache.updatedAt && Date.now() - cache.updatedAt < MODEL_CACHE_MAX_AGE) {
-        control.status.textContent = `Cached model list. Last checked: ${new Date(cache.updatedAt).toLocaleString()}.`;
-        return;
+      if (usable) {
+        previousCatalog = cache;
+        render(cache.models);
+        if (!force && recentlyChecked(cache.updatedAt)) {
+          setCheckedModels(control.provider, cache.models.map(model => model.id));
+          control.status.textContent = `Cached model list. Last checked: ${new Date(cache.updatedAt).toLocaleString()}.`;
+          return;
+        }
       }
       const models = await globalThis.fetchCloudModels(control.provider, key);
       if (!isCurrent()) return;
@@ -137,9 +222,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       await chrome.storage.local.set({ [cacheKey]: { fingerprint, models, updatedAt } });
       if (!isCurrent()) return;
       render(models);
+      setCheckedModels(control.provider, models.map(model => model.id));
       control.status.textContent = `Model list updated: ${new Date(updatedAt).toLocaleString()}.`;
     } catch (error) {
-      if (isCurrent()) control.status.textContent = 'Could not refresh models. The saved or bundled list is still available. Check the API key and try again.';
+      if (!isCurrent()) return;
+      setCheckedModels(control.provider, []);
+      if (previousCatalog && recentlyChecked(previousCatalog.updatedAt)) {
+        // Keep the saved choices but require a fresh check before showing the badge again.
+        chrome.storage.local.set({ [cacheKey]: { ...previousCatalog, updatedAt: 0 } }).catch(() => {});
+      }
+      control.status.textContent = 'Could not refresh models. The saved or bundled list is still available. Check the API key and try again.';
     } finally {
       if (isCurrent()) control.button.disabled = false;
     }
@@ -157,6 +249,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     control.hint.after(control.button, control.status);
     control.input.addEventListener('input', () => {
       control.generation = (control.generation || 0) + 1;
+      setCheckedModels(control.provider, []);
       control.button.disabled = false;
       globalThis.setDiscoveredModels(control.provider, []);
       globalThis.populateModelSelect(control.select, control.provider, control.select.value);
@@ -171,6 +264,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const preserveGroupsMinTabsWarning = document.getElementById('preserveGroupsMinTabsWarning');
   const mergeIntoExistingCheckbox = document.getElementById('mergeIntoExisting');
   const refineExistingGroupsCheckbox = document.getElementById('refineExistingGroups');
+  const uniqueGroupNamesCheckbox = document.getElementById('uniqueGroupNames');
   const excludedDomainsInput = document.getElementById('excludedDomains');
   const sortTabsWithinGroupsByTitleCheckbox = document.getElementById('sortTabsWithinGroupsByTitle');
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
@@ -182,6 +276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
   const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
   const refreshPrGroupBtn = document.getElementById('refreshPrGroupBtn');
+  const testReviewConnectionBtn = document.getElementById('testReviewConnectionBtn');
   const refreshClosedIssueGroupBtn = document.getElementById('refreshClosedIssueGroupBtn');
   const refreshGithubLabelGroupsBtn = document.getElementById('refreshGithubLabelGroupsBtn');
   const githubTokenInput = document.getElementById('githubToken');
@@ -189,6 +284,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const prProviderFields = document.querySelectorAll('[data-review-provider]');
   const prProviderInputs = ['gitlabToken', 'azureDevOpsToken', 'azureDevOpsOrganization', 'azureDevOpsProject']
     .map(id => document.getElementById(id));
+  const reviewInputs = [githubTokenInput, ...prProviderInputs];
+  const reviewOptions = Array.from(prProviderSelect.options, option => ({
+    option, label: option.textContent, provider: ReviewProviders.getProvider(option.value),
+  }));
+  const reviewCheckKeys = reviewOptions.map(({ provider }) => ReviewProviders.checkKey(provider));
   const prGroupEnabledCheckbox = document.getElementById('prGroupEnabled');
   const prGroupColorSelect = document.getElementById('prGroupColor');
   const closedIssueGroupEnabledCheckbox = document.getElementById('closedIssueGroupEnabled');
@@ -420,7 +520,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'closeDuplicateTabs', 'ignoreQuery', 'ignoreHash', 'reloadTabs',
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
-    'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'excludedDomains', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
+    'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'uniqueGroupNames',
+    'excludedDomains', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
     'autoOrganizeEnabled', 'autoOrganizeDelay',
     'githubToken', 'prProvider', ...prProviderInputs.map(input => input.id),
     'prGroupEnabled', 'prGroupColor', 'closedIssueGroupEnabled',
@@ -443,7 +544,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.geminiKey) {
     geminiKeyInput.value = settings.geminiKey;
   }
-  const isFirefox = window.location.protocol === 'moz-extension:';
   if (isFirefox) {
     aiProviderSelect.querySelector('option[value="chrome-ai"]').remove();
     document.querySelector('.provider-card[data-provider="chrome-ai"]').remove();
@@ -482,6 +582,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   preserveGroupsCheckbox.checked = settings.preserveGroups !== false; // default to true
   refineExistingGroupsCheckbox.checked = settings.refineExistingGroups === true;
+  uniqueGroupNamesCheckbox.checked = settings.uniqueGroupNames !== false;
   excludedDomainsInput.value = typeof settings.excludedDomains === 'string' ? settings.excludedDomains : '';
   const savedMinTabs = settings.preserveGroupsMinTabs;
   preserveGroupsMinTabsInput.value = savedMinTabs !== undefined && savedMinTabs !== '' ? Number(savedMinTabs) : 1;
@@ -660,15 +761,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     disabled: ''
   };
 
-  function updateActiveProviderCard() {
+  function showProviderCards() {
     providerCards.forEach(card => {
       if (!card.isConnected) return;
-      const isSelected = card.dataset.provider === aiProviderSelect.value;
-      card.classList.toggle('provider-card--active', isSelected);
-      const container = isSelected ? selectedProvider : otherProviders;
+      const isPrimary = card.dataset.provider === aiProviderSelect.value;
+      card.hidden = !isPrimary && card.dataset.provider !== otherProviderSelect.value;
+      card.classList.toggle('provider-card--active', isPrimary);
+      const container = isPrimary ? selectedProvider : otherProviders;
       if (card.parentElement !== container) container.append(card);
     });
   }
+
+  function updateActiveProviderCard() {
+    const previous = otherProviderSelect.value;
+    const alternatives = Array.from(aiProviderSelect.options)
+      .filter(option => option.value !== aiProviderSelect.value)
+      .map(option => option.cloneNode(true));
+    otherProviderSelect.replaceChildren(new Option('Choose a provider', ''), ...alternatives);
+    if (alternatives.some(option => option.value === previous)) otherProviderSelect.value = previous;
+    renderProviderChecks();
+    showProviderCards();
+  }
+
+  otherProviderSelect.addEventListener('change', showProviderCards);
 
   // The cloud opt-in only applies to a local primary, and the order list
   // only means something with fallback on at all.
@@ -842,7 +957,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     localModelInput.placeholder = model ? `Default: ${model}` : 'Select or enter a model name';
   }
 
+  const localServerCheck = trackServerModels('local', () => localModelSettings().baseUrl);
+  const customServerCheck = trackServerModels('custom-openai', () => JSON.stringify([
+    customOpenaiBaseUrlInput.value.trim(), customOpenaiKeyInput.value.trim(),
+  ]));
+  let customConnectionRevision = 0;
+  for (const field of [customOpenaiBaseUrlInput, customOpenaiKeyInput]) {
+    field.addEventListener('input', () => {
+      customConnectionRevision++;
+      customServerCheck.invalidate();
+      customOpenaiModelsList.replaceChildren();
+      customOpenaiStatus.textContent = '';
+    });
+  }
+
   localBaseUrlInput.addEventListener('input', () => {
+    localServerCheck.invalidate();
     updateLocalModelPlaceholder();
     chrome.storage.local.set({ localBaseUrl: localBaseUrlInput.value.trim() });
     scheduleFallbackUiRefresh(); // the chain shows this host's access state
@@ -850,6 +980,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   localModelInput.addEventListener('input', () => {
     chrome.storage.local.set({ localModel: localModelInput.value.trim() });
+    renderProviderChecks();
     scheduleFallbackUiRefresh(); // the local fallback chain depends on a model name being set
   });
 
@@ -860,6 +991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   customOpenaiModelInput.addEventListener('input', () => {
     chrome.storage.local.set({ customOpenaiModel: customOpenaiModelInput.value.trim() });
+    renderProviderChecks();
     scheduleFallbackUiRefresh();
   });
 
@@ -883,25 +1015,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     requestPermission: requestLocalHostPermissionIfNeeded,
     onSelect: model => {
       chrome.storage.local.set({ localModel: model });
+      renderProviderChecks();
       scheduleFallbackUiRefresh();
     },
+    onModelsChecked: localServerCheck.record,
     onRefresh: scheduleFallbackUiRefresh,
   });
+  localServerCheck.restore();
+  customServerCheck.restore();
   if (aiProviderSelect.value === 'local') localModelPicker.refresh(false);
 
   // Ask the service worker to test the OpenAI-compatible host, so the result
   // reflects the context that actually organizes tabs.
   testCustomOpenaiBtn.addEventListener('click', async () => {
+    const revision = customConnectionRevision;
+    const isCurrent = () => customConnectionRevision === revision;
+    const baseUrl = customOpenaiBaseUrlInput.value.trim();
+    const apiKey = customOpenaiKeyInput.value.trim();
     testCustomOpenaiBtn.disabled = true;
     customOpenaiStatus.textContent = 'Testing connection...';
     customOpenaiStatus.className = 'status info';
     try {
-      await requestCustomHostPermissionIfNeeded(customOpenaiBaseUrlInput.value.trim());
+      await requestCustomHostPermissionIfNeeded(baseUrl);
+      if (!isCurrent()) return;
       const result = await chrome.runtime.sendMessage({
-        action: 'testCustomOpenAI',
-        baseUrl: customOpenaiBaseUrlInput.value.trim(),
-        apiKey: customOpenaiKeyInput.value.trim()
+        action: 'testCustomOpenAI', baseUrl, apiKey,
       });
+      if (!isCurrent()) return;
+      customServerCheck.record(result?.success ? result.models : []);
       if (!result) {
         customOpenaiStatus.textContent =
           'No response from the service worker. Reload the extension (chrome://extensions → refresh) and try again.';
@@ -934,6 +1075,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         (chosen && !known ? ` Warning: "${chosen}" is not in that list.` : '');
       customOpenaiStatus.className = chosen && !known ? 'status info' : 'status success';
     } catch (error) {
+      if (!isCurrent()) return;
+      customServerCheck.record([]);
       customOpenaiStatus.textContent = 'Error: ' + error.message;
       customOpenaiStatus.className = 'status error';
     } finally {
@@ -951,6 +1094,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     try {
       const result = await chrome.runtime.sendMessage({ action: 'checkChromeAI' });
+      chromeAiAvailable = result?.success && result.state === 'available';
+      renderProviderChecks();
       if (!result.success) {
         if (!silent) {
           chromeAiStatus.textContent = result.error || 'Could not check Chrome built-in AI';
@@ -966,6 +1111,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           : 'status error';
       }
     } catch (error) {
+      chromeAiAvailable = false;
+      renderProviderChecks();
       if (!silent) {
         chromeAiStatus.textContent = 'Error: ' + error.message;
         chromeAiStatus.className = 'status error';
@@ -998,6 +1145,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       });
       session.destroy();
+      chromeAiAvailable = true;
+      renderProviderChecks();
       chromeAiStatus.textContent = 'Gemini Nano is downloaded and ready to use on this device.';
       chromeAiStatus.className = 'status success';
       downloadChromeAiBtn.hidden = true;
@@ -1037,6 +1186,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   refineExistingGroupsCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ refineExistingGroups: refineExistingGroupsCheckbox.checked });
     updatePreserveGroupsMinTabsVisibility();
+  });
+
+  uniqueGroupNamesCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ uniqueGroupNames: uniqueGroupNamesCheckbox.checked });
   });
 
   function updatePreserveGroupsMinTabsWarning() {
@@ -1103,9 +1256,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncGitHubLabelGroupColors(normalizeGitHubLabelGroupNames(githubLabelGroupNamesTextarea.value));
   });
 
-  githubTokenInput.addEventListener('input', () => {
-    chrome.storage.local.set({ githubToken: githubTokenInput.value.trim() });
-  });
+  let reviewChecksRevision = 0;
+  async function renderReviewChecks() {
+    const revision = ++reviewChecksRevision;
+    const settings = Object.fromEntries(reviewInputs.map(input => [input.id, input.value]));
+    try {
+      const checks = await chrome.storage.local.get(reviewCheckKeys);
+      const labels = await Promise.all(reviewOptions.map(async ({ provider, label }) => {
+        const check = checks[ReviewProviders.checkKey(provider)];
+        if (!check || !recentlyChecked(check.updatedAt)) return label;
+        if (check.fingerprint !== await ReviewProviders.connectionFingerprint(provider, settings)) return label;
+        if (provider.permission && !await chrome.permissions.contains({ origins: [provider.permission] })) return label;
+        return `✅ ${label}`;
+      }));
+      if (revision === reviewChecksRevision) {
+        reviewOptions.forEach(({ option }, index) => { option.textContent = labels[index]; });
+      }
+    } catch (error) {
+      if (revision === reviewChecksRevision) reviewOptions.forEach(({ option, label }) => { option.textContent = label; });
+    }
+  }
+
   function updatePrProviderFields() {
     for (const field of prProviderFields) field.hidden = field.dataset.reviewProvider !== prProviderSelect.value;
   }
@@ -1113,9 +1284,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ prProvider: prProviderSelect.value });
     updatePrProviderFields();
   });
-  for (const input of prProviderInputs) {
-    input.addEventListener('input', () => chrome.storage.local.set({ [input.id]: input.value.trim() }));
+  for (const input of reviewInputs) {
+    input.addEventListener('input', () => {
+      chrome.storage.local.set({ [input.id]: input.value.trim() });
+      const entry = reviewOptions.find(({ provider }) => provider.fields.includes(input.id));
+      entry.option.textContent = entry.label;
+      renderReviewChecks();
+    });
   }
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && reviewCheckKeys.some(key => Object.hasOwn(changes, key))) renderReviewChecks();
+  });
+  chrome.permissions.onRemoved.addListener(renderReviewChecks);
+  renderReviewChecks();
   prGroupEnabledCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ prGroupEnabled: prGroupEnabledCheckbox.checked });
   });
@@ -1142,33 +1323,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ closedIssueGroupEnabled: closedIssueGroupEnabledCheckbox.checked });
   });
 
-  // Refresh PR group button
-  refreshPrGroupBtn.addEventListener('click', async () => {
+  async function runReviewAction(testOnly) {
+    testReviewConnectionBtn.disabled = true;
     refreshPrGroupBtn.disabled = true;
-    actionStatus.textContent = 'Refreshing PR group...';
+    actionStatus.textContent = testOnly ? 'Checking review provider…' : 'Refreshing PR group…';
     actionStatus.className = 'status info';
     try {
       const provider = globalThis.ReviewProviders.getProvider(prProviderSelect.value);
       if (provider.permission && !await chrome.permissions.request({ origins: [provider.permission] })) {
         throw new Error('Access to ' + provider.name + ' was declined.');
       }
-      const prGroupColor = normalizeChromeTabGroupColor(prGroupColorSelect.value) || 'blue';
-      await chrome.storage.local.set({ prGroupColor });
-      const result = await chrome.runtime.sendMessage({ action: 'syncPrTabGroup' });
+      if (!testOnly) {
+        const prGroupColor = normalizeChromeTabGroupColor(prGroupColorSelect.value) || 'blue';
+        await chrome.storage.local.set({ prGroupColor });
+      }
+      const result = await chrome.runtime.sendMessage({
+        action: testOnly ? 'testReviewConnection' : 'syncPrTabGroup', provider: provider.id,
+      });
       if (result.success) {
         actionStatus.textContent = result.message || 'PR group refreshed.';
         actionStatus.className = 'status success';
       } else {
-        actionStatus.textContent = result.error || 'Failed to refresh PR group';
+        actionStatus.textContent = result.error || (testOnly ? 'Could not connect to the review provider.' : 'Failed to refresh PR group.');
         actionStatus.className = 'status error';
       }
     } catch (error) {
       actionStatus.textContent = 'Error: ' + error.message;
       actionStatus.className = 'status error';
     } finally {
+      testReviewConnectionBtn.disabled = false;
       refreshPrGroupBtn.disabled = false;
     }
-  });
+  }
+  testReviewConnectionBtn.addEventListener('click', () => runReviewAction(true));
+  refreshPrGroupBtn.addEventListener('click', () => runReviewAction(false));
 
   refreshClosedIssueGroupBtn.addEventListener('click', async () => {
     refreshClosedIssueGroupBtn.disabled = true;
@@ -1320,6 +1508,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         let msg = result.refined
           ? `Moved ${result.movedCount} tab(s); created ${result.groupCount} group(s).`
           : `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+        if (result.renamedGroupCount > 0) {
+          msg += ` Renamed ${result.renamedGroupCount} duplicate group name(s).`;
+        }
         if (result.fallbackInfo) {
           msg += ` Used ${result.providerUsedLabel} after ${result.fallbackInfo.primaryFailedLabel} failed (${result.fallbackInfo.primaryFailedSummary}).`;
         }

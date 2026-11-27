@@ -61,7 +61,7 @@
     function render() {
       var chosen = elements.model.value.trim();
       elements.choices.textContent = '';
-      option(elements.choices, '', chosen ? 'Manual or saved model: ' + chosen : 'Choose an installed model or view setup suggestions');
+      option(elements.choices, '', chosen ? 'Manual or saved model: ' + chosen : 'Choose a model');
       if (installed.length) {
         var available = doc.createElement('optgroup');
         available.label = serverType === 'ollama' ? 'Installed in Ollama' : 'Available on this server';
@@ -119,6 +119,7 @@
           throw new Error('The local server returned an invalid model list.');
         }
         installed = Array.from(new Set(result.models));
+        config.onModelsChecked?.(installed);
         running = Array.isArray(result.runningModels) ? result.runningModels : [];
         modelDetails = Array.isArray(result.modelDetails) ? result.modelDetails : [];
         serverType = result.serverType;
@@ -132,6 +133,7 @@
       } catch (error) {
         if (!isCurrent()) return;
         installed = [];
+        config.onModelsChecked?.(installed);
         running = [];
         modelDetails = [];
         serverType = '';

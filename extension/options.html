@@ -30,10 +30,10 @@
             <h2 id="grouping-heading">Tab grouping</h2>
             <p>Organize tabs in this window or group them automatically as you browse.</p>
           </div>
-          <div class="actions">
-            <button id="organizeTabsBtn" class="btn btn-primary">Organize tabs now</button>
+          <div class="split-button" role="group" aria-label="Tab actions">
+            <button type="button" id="organizeTabsBtn" class="btn btn-primary">Organize tabs now</button>
             <details class="action-menu">
-              <summary>More actions</summary>
+              <summary aria-label="More actions" title="More actions"></summary>
               <div class="action-menu-items">
                 <button id="testBtn" class="btn btn-secondary">Test duplicate detection</button>
                 <button id="reloadAllBtn" class="btn btn-secondary">Reload all tabs</button>
@@ -165,8 +165,8 @@
                 <label class="setting-label" for="preserveGroupsMinTabs">Only preserve groups with more than N tabs</label>
                 <p class="setting-description">
                   When set, only groups that have <strong>more than N</strong> tabs are preserved. Groups with N tabs or fewer are ungrouped and sent through AI organization again.
-                  <br>AI will also never create a new group with N or fewer tabs; such tabs go into Misc.
-                  <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved; groups with 1–2 tabs are re-organized, and new groups have at least 3 tabs.
+                  <br>Smaller sets go into Misc. A new Misc group needs at least two tabs.
+                  <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved, and smaller groups are reorganized.
                 </p>
                 <p id="preserveGroupsMinTabsWarning" class="setting-warning" role="alert" style="display: none;">
                   This feature may not work well if the number is higher than 3.
@@ -197,12 +197,23 @@
               <div class="setting-info">
                 <label class="setting-label" for="refineExistingGroups">Refine existing groups</label>
                 <p class="setting-description">
-                  Keep your groups, but move tabs that clearly don't belong to a better group. Groups are never renamed; only emptied groups disappear.
+                  Keep your groups and move tabs that clearly belong elsewhere. Groups disappear when emptied.
                   <br>When enabled, tabs in your groups and your group names are sent to AI, and "Preserve existing groups" and "Merge tabs into existing groups" are ignored. The minimum group size still applies to new groups.
                 </p>
               </div>
               <label class="switch">
                 <input type="checkbox" id="refineExistingGroups">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="uniqueGroupNames">Keep group names unique</label>
+                <p class="setting-description">During grouping, add numbers to repeated group names in this window. On by default.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="uniqueGroupNames" checked>
                 <span class="slider"></span>
               </label>
             </div>
@@ -247,14 +258,14 @@
           <div class="setting-item">
             <div class="setting-info">
               <label class="setting-label" for="aiProvider">AI provider</label>
-              <p class="setting-description">Applies to both manual and automatic grouping.</p>
+              <p class="setting-description" id="providerCheckHint">A green check means the selected model passed its last availability check.</p>
             </div>
-            <select id="aiProvider" class="provider-select">
+            <select id="aiProvider" class="provider-select" aria-describedby="providerCheckHint">
               <option value="openai">OpenAI (cloud)</option>
               <option value="claude">Claude (cloud)</option>
               <option value="gemini">Gemini (cloud)</option>
               <option value="chrome-ai">Chrome built-in AI (on-device)</option>
-              <option value="local">Local model server — Ollama / LM Studio</option>
+              <option value="local">Local model server</option>
               <option value="custom-openai">OpenAI Compatible API Host</option>
             </select>
           </div>
@@ -262,7 +273,13 @@
           <div id="selectedProvider" class="selected-provider"></div>
           <details class="settings-disclosure">
             <summary>Configure other providers</summary>
-            <div id="otherProviders" class="provider-grid">
+            <div class="setting-item other-provider-picker">
+              <label class="setting-label" for="otherProviderSelect">Provider to configure</label>
+              <select id="otherProviderSelect" class="provider-select" aria-describedby="providerCheckHint">
+                <option value="">Choose a provider</option>
+              </select>
+            </div>
+            <div id="otherProviders">
               <div class="provider-card" data-provider="chrome-ai">
                 <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
                 <p class="provider-card-desc">Gemini Nano, running inside Chrome itself. Chrome downloads the model (a few GB) once; after that it works fully offline.</p>
@@ -290,11 +307,10 @@
                   <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection / Refresh models</button>
                 </div>
                 <div id="localModelStatus" class="status" role="status"></div>
-                <p class="model-recommended-hint" id="localModelSuggestion"></p>
-                <p class="model-recommended-hint"><a id="localModelSource" href="https://ollama.com/library/qwen2.5:1.5b" target="_blank" rel="noopener noreferrer">Official model details and license</a></p>
                 <details class="setup-notes" id="localModelSetup">
-                  <summary>Ollama setup commands and suggestion sources</summary>
-                  <p>These small-model suggestions use official Ollama specifications, reviewed November 16, 2026. They are starting points, not benchmark winners for tab grouping. Download sizes are approximate, not RAM requirements. Suggestions update with extension releases.</p>
+                  <summary>Ollama setup commands</summary>
+                  <p id="localModelSuggestion"></p>
+                  <p><a id="localModelSource" href="https://ollama.com/library/qwen2.5:1.5b" target="_blank" rel="noopener noreferrer">Model details and license</a></p>
                   <ol>
                     <li>Install Ollama from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">the official download page</a>.</li>
                     <li>For a foreground server, quit any existing Ollama app or service first. Choose your terminal below.</li>
@@ -341,7 +357,7 @@
 
               <div class="provider-card" data-provider="gemini">
                 <div class="provider-card-header">Gemini <span class="primary-badge">Primary</span></div>
-                <label class="field-label" for="geminiKey">AI Studio authorization key <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
+                <label class="field-label" for="geminiKey">Google AI Studio key <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
                 <div class="input-with-toggle">
                   <input type="password" id="geminiKey" class="api-key-input" placeholder="Authorization key">
                   <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
@@ -458,13 +474,19 @@
           <h2 id="github-heading">Code reviews</h2>
           <p class="section-description">Keep open requests you authored or are assigned to review in a PRs tab group.</p>
 
-          <div class="setting-item">
-            <label class="setting-label" for="prProvider">Review provider</label>
-            <select id="prProvider" class="provider-select">
-              <option value="github">GitHub</option>
-              <option value="gitlab">GitLab.com</option>
-              <option value="azure">Azure DevOps Services</option>
-            </select>
+          <div class="setting-item review-provider-setting">
+            <div class="setting-info">
+              <label class="setting-label" for="prProvider">Review provider</label>
+              <p class="setting-description" id="reviewCheckHint">A green check means the current settings passed a recent connection check.</p>
+            </div>
+            <div class="review-provider-actions">
+              <select id="prProvider" class="provider-select" aria-describedby="reviewCheckHint">
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab.com</option>
+                <option value="azure">Azure DevOps Services</option>
+              </select>
+              <button id="testReviewConnectionBtn" type="button" class="btn btn-secondary">Test connection</button>
+            </div>
           </div>
 
           <div class="setting-item setting-item--stacked" data-review-provider="gitlab" hidden>

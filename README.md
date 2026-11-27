@@ -29,6 +29,8 @@ Use a server on this computer and leave cloud fallback and code review integrati
 
 In **Grouping rules and toolbar behaviour**, set excluded sites or choose how to handle existing groups. Use **Pinned tabs** to save URL rules.
 
+The toolbar button tidies pinned tabs by default. Turn on **Group tabs when you click the toolbar icon** to also group tabs with AI. After a click, the button briefly shows a check or an exclamation mark. Hover over it to read the result.
+
 ## Group code reviews
 
 In **Code reviews**, choose a provider and select **Refresh PR group**. The extension opens missing requests you authored or are assigned to review in a **PRs** group. Requests that stop matching leave the group and stay open. Turn on **Enable PR tab group** to refresh it when you tidy or organize tabs.

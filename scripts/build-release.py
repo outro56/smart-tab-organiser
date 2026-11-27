@@ -133,6 +133,7 @@ def validate_manifest() -> tuple[dict[str, object], str]:
 
 def make_firefox_manifest(manifest: dict[str, object]) -> dict[str, object]:
     firefox = manifest.copy()
+    firefox["developer"] = {"name": manifest["author"], "url": manifest["homepage_url"]}
     firefox["options_ui"] = {"page": firefox.pop("options_page"), "open_in_tab": True}
     firefox["background"] = {"scripts": ["ai-models.js", "host-access.js", "review-providers.js", "background.js"]}
     firefox["browser_specific_settings"] = {

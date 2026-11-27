@@ -15,6 +15,9 @@ assert.ok(START >= 0 && END > START, 'refreshCloudModelList extraction boundarie
 // Extract the actual function so these tests exercise options.js without mocking
 // unrelated options-page initialization or adding a production-only test export.
 const REFRESH_SOURCE = SOURCE.slice(START, END);
+const CACHE_HELPERS_SOURCE = SOURCE.slice(
+  SOURCE.indexOf('  function recentlyChecked('), SOURCE.indexOf('  function trackServerModels(')
+);
 const NOW = 1800000000000;
 const MODEL_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
 const KEY = 'test-api-key';
@@ -42,7 +45,7 @@ function deferred() {
 }
 
 function load({ provider = 'openai', key = KEY, cached, fetchModels, get, set } = {}) {
-  const calls = { get: [], set: [], fetch: [], discovered: [], populate: [], hint: [] };
+  const calls = { get: [], set: [], fetch: [], discovered: [], populate: [], hint: [], checked: [] };
   const control = {
     provider,
     input: { value: key },
@@ -80,8 +83,9 @@ function load({ provider = 'openai', key = KEY, cached, fetchModels, get, set } 
       select.value = selected;
     },
     updateModelRecommendedHint: (...args) => calls.hint.push(args),
+    setCheckedModels: (provider, models) => calls.checked.push([provider, Array.from(models)]),
   });
-  vm.runInContext(REFRESH_SOURCE, context, { filename: 'options.js' });
+  vm.runInContext(CACHE_HELPERS_SOURCE + REFRESH_SOURCE, context, { filename: 'options.js' });
   return { refresh: force => context.refreshCloudModelList(control, force), control, calls };
 }
 
@@ -102,6 +106,7 @@ for (const provider of ['openai', 'claude', 'gemini']) {
     assert.equal(env.calls.set.length, 0);
     assert.equal(env.calls.discovered.length, 1);
     assertRendered(env, CACHED_MODELS);
+    assert.deepEqual(env.calls.checked, [[provider, ['cached-model']]]);
     assert.match(env.control.status.textContent, /Cached model list\. Last checked: .+/);
     assert.equal(env.control.button.disabled, false);
   });
@@ -114,6 +119,7 @@ test('cache at its expiry boundary is rendered and then refreshed', async () => 
   assert.equal(env.calls.discovered.length, 2);
   assertRendered(env, CACHED_MODELS);
   assertRendered(env, NEW_MODELS, 1);
+  assert.deepEqual(env.calls.checked, [['openai', ['new-model']]]);
   assert.equal(env.calls.set.length, 1);
   const saved = env.calls.set[0].openaiModelCatalog;
   assert.equal(saved.fingerprint, await fingerprint(KEY));
@@ -141,6 +147,7 @@ test('a fresh cache for another credential is not rendered or reused', async () 
   assert.deepEqual(env.calls.fetch, [['openai', KEY]]);
   assert.equal(env.calls.discovered.length, 1);
   assertRendered(env, NEW_MODELS);
+  assert.deepEqual(env.calls.checked, [['openai', ['new-model']]]);
   assert.equal(env.calls.set[0].openaiModelCatalog.fingerprint, await fingerprint(KEY));
 });
 
@@ -174,6 +181,15 @@ test('network and storage errors leave the selector unchanged and show useful st
   }
 });
 
+test('a failed recheck clears verification while retaining saved model choices', async () => {
+  const env = load({ cached: await cache(), fetchModels: async () => { throw new Error('key revoked'); } });
+  await env.refresh(true);
+  assertRendered(env, CACHED_MODELS);
+  assert.deepEqual(env.calls.checked, [['openai', []]]);
+  assert.equal(env.calls.set[0].openaiModelCatalog.updatedAt, 0);
+  assert.equal(env.calls.set[0].openaiModelCatalog.models, CACHED_MODELS);
+});
+
 test('a response arriving after a key edit is ignored', async () => {
   const started = deferred();
   const response = deferred();
@@ -193,6 +209,7 @@ test('a response arriving after a key edit is ignored', async () => {
   assert.equal(env.calls.discovered.length, 0);
   assert.equal(env.calls.populate.length, 0);
   assert.equal(env.calls.hint.length, 0);
+  assert.deepEqual(env.calls.checked, []);
   assert.equal(env.control.status.textContent, 'API key changed. Select Refresh models to update the list.');
   assert.equal(env.control.button.disabled, false);
 });
