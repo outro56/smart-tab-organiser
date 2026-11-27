@@ -132,6 +132,7 @@ function loadBackground(extensionOrigin = 'chrome-extension://test') {
     clearTimeout,
     console: {
       error() {},
+      info() {},
       log() {},
       warn() {},
     },
@@ -1222,7 +1223,8 @@ test('local model retries share one total timeout', async () => {
   const clockValues = [0, 0, 180001];
   let fetchCount = 0;
   context.Date = { now: () => clockValues.shift() ?? 180001 };
-  context.fetch = async () => {
+  context.fetch = async (url) => {
+    if (url.endsWith('/models')) return { ok: false, status: 404 };
     fetchCount++;
     return {
       ok: true,
@@ -2242,12 +2244,15 @@ test('automatic grouping keeps two identical URLs open when duplicate closing is
   assert.deepEqual(tabs.map(({ id, groupId }) => [id, groupId]), [[11, 17], [12, 17]]);
 });
 
-test('Firefox sends a local AI request to oMLX with Qwen Coder when both settings are blank', async () => {
+test('Firefox defaults to Qwen Coder on oMLX and bounds its answer to the listed tabs', async () => {
   const { context } = loadBackground('moz-extension://test');
   const requests = [];
   context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: true, json: async () => ({ data: [
+      { id: 'Qwen2.5-Coder-1.5B-4bit', max_model_len: 16384 },
+    ] }) };
     const body = JSON.parse(options.body);
-    requests.push({ url, model: body.model, format: body.response_format?.type });
+    requests.push({ url, body });
     return {
       ok: true,
       headers: { get: () => 'application/json' },
@@ -2258,13 +2263,73 @@ test('Firefox sends a local AI request to oMLX with Qwen Coder when both setting
   const [status] = await context.computeProviderStatuses(chooser.chain, {});
   assert.equal(status.status, 'ready');
 
-  await context.callProvider(chooser.primary, {}, [], '', null, 1);
+  const tabs = [
+    { title: 'Firefox Docs', url: 'https://example.com/firefox' },
+    { title: 'Chrome Docs', url: 'https://example.com/chrome' },
+  ];
+  const existingGroup = 'Cross-browser extension documentation';
+  const groups = await context.callProvider(chooser.primary, {}, tabs, '', [{ title: existingGroup, tabs: [] }], 1);
 
-  assert.deepEqual(requests, [{
-    url: 'http://127.0.0.1:8000/v1/chat/completions',
-    model: 'Qwen2.5-Coder-1.5B-4bit',
-    format: 'json_schema',
-  }]);
+  assert.equal(requests.length, 1);
+  const [{ url, body }] = requests;
+  assert.equal(url, 'http://127.0.0.1:8000/v1/chat/completions');
+  assert.equal(body.model, 'Qwen2.5-Coder-1.5B-4bit');
+  assert.ok(body.max_tokens <= 256, 'Two tabs should not generate thousands of tokens');
+  assert.equal(body.response_format.type, 'json_schema');
+  const schema = body.response_format.json_schema.schema;
+  assert.equal(schema.maxItems, tabs.length);
+  assert.equal(schema.items.properties.tabIndices.maxItems, tabs.length);
+  assert.deepEqual(schema.items.properties.tabIndices.items.enum, [1, 2]);
+  assert.ok(schema.items.properties.groupName.maxLength >= existingGroup.length);
+  assert.deepEqual(JSON.parse(JSON.stringify(groups)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+});
+
+test('local model batches respect the selected model context and merge matching groups with global indices', async () => {
+  const { context } = loadBackground('moz-extension://test');
+  const requests = [];
+  const tabs = Array.from({ length: 4 }, (_, index) => ({
+    title: `Project ${index + 1} ${'design notes '.repeat(30)}`,
+    url: `https://example.com/project/${index + 1}`,
+  }));
+  context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: true, json: async () => ({ data: [
+      { id: 'larger-model', max_model_len: 32768 },
+      { id: 'test-model', max_model_len: 1200 },
+    ] }) };
+    const body = JSON.parse(options.body);
+    const size = body.response_format.json_schema.schema.maxItems;
+    requests.push(size);
+    const group = { groupName: requests.length === 1 ? 'Project' : 'project', tabIndices: [1, 2, 99] };
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify([group]) } }] }) };
+  };
+
+  const result = await context.callLocalModel('http://127.0.0.1:8000/v1', 'test-model', tabs, '');
+
+  assert.deepEqual(requests, [2, 2]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ groupName: 'Project', tabIndices: [1, 2, 3, 4] }]);
+});
+
+test('local model splits a rejected prompt when the server omits its context limit', async () => {
+  const { context } = loadBackground();
+  const requests = [];
+  const tabs = ['one', 'two', 'three', 'four'].map(title => ({ title, url: `https://example.com/${title}` }));
+  context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: false, status: 404 };
+    const body = JSON.parse(options.body);
+    requests.push(body.messages[0].content);
+    if (requests.length === 1) {
+      return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+    }
+    const content = requests.length === 2 ? '[]' : '[{"groupName":"Project","tabIndices":[1,2]}]';
+    return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+  };
+
+  const result = await context.callLocalModel('http://localhost:11434/v1', 'test-model', tabs, '');
+
+  assert.equal(requests.length, 3);
+  assert.doesNotMatch(requests[1], /"three"/);
+  assert.doesNotMatch(requests[2], /"one"/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ groupName: 'Project', tabIndices: [3, 4] }]);
 });
 
 test('auto-organize does nothing when the setting was never enabled', async () => {

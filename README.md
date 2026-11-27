@@ -33,6 +33,16 @@ In **Grouping rules and toolbar behaviour**, set excluded sites or choose how to
 
 The toolbar button tidies pinned tabs by default. Turn on **Group tabs when you click the toolbar icon** to also group tabs with AI. After a click, the button briefly shows a check or an exclamation mark. Hover over it to read the result.
 
+## Debug grouping
+
+| Where | How to see the logs |
+| --- | --- |
+| Firefox extension | Open `about:debugging` → **This Firefox** → **Inspect** next to **Smart Tab Organiser** → **Console**. [Firefox guide](https://extensionworkshop.com/documentation/develop/debugging/) |
+| Chrome or Edge extension | Open `chrome://extensions` or `edge://extensions`, turn on **Developer mode**, and select **service worker** under **Inspect views** → **Console**. [Chrome guide](https://developer.chrome.com/docs/extensions/get-started/tutorial/debug) |
+| oMLX on macOS | Run `tail -F ~/.omlx/logs/server.log` in Terminal. Look for `Chat completion` to see the model, token counts, and duration. |
+
+Open the console before reproducing the issue. Local model servers such as oMLX report the model’s context size. The extension uses it to split large tab lists and merges groups with the same name. In the oMLX log, `finish_reason=length` means the reply reached its output limit.
+
 ## Group code reviews
 
 In **Code reviews**, choose a provider and select **Refresh PR group**. The extension opens missing requests you authored or are assigned to review in a **PRs** group. Requests that stop matching leave the group and stay open. Turn on **Enable PR tab group** to refresh it when you tidy or organize tabs.

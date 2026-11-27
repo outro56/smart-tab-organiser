@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.3.4
+
+- Detect the local model’s context limit and split large tab lists into batches. Merge groups with matching names across batches.
+- Limit oMLX replies based on the number of tabs so a short grouping request can’t run to the full output limit.
+- Document where to find grouping logs in Firefox, Chrome, Edge, and oMLX.
+
 ## Unreleased
 
 ### Added
