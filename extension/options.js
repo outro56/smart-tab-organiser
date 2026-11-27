@@ -52,6 +52,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const claudeKeyInput = document.getElementById('claudeKey');
   const geminiKeyInput = document.getElementById('geminiKey');
   const aiProviderSelect = document.getElementById('aiProvider');
+  const groupingFallbackSettings = document.getElementById('groupingFallbackSettings');
+  const domainFallbackCheckbox = document.getElementById('domainFallbackEnabled');
   const aiFallbackEnabledCheckbox = document.getElementById('aiFallbackEnabled');
   const aiFallbackHintEl = document.getElementById('aiFallbackHint');
   const openaiModelSelect = document.getElementById('openaiModel');
@@ -102,7 +104,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       const provider = option.value;
       if (!provider) continue;
       const model = provider === 'local' ? localModelSettings().model : providerModelInputs[provider]?.value.trim();
-      const verified = provider === 'chrome-ai' ? chromeAiAvailable : checkedModels.get(provider)?.has(model);
+      const verified = provider === 'domain'
+        || (provider === 'chrome-ai' ? chromeAiAvailable : checkedModels.get(provider)?.has(model));
       option.textContent = `${verified ? '✅ ' : ''}${providerLabels.get(provider)}`;
     }
   }
@@ -522,7 +525,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load saved settings
   const settings = await chrome.storage.local.get([
     'closeDuplicateTabs', 'ignoreQuery', 'ignoreHash', 'reloadTabs',
-    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
+    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'domainFallbackEnabled', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'uniqueGroupNames',
     'limitGroupsPerWindow', 'maxGroupsPerWindow',
@@ -555,6 +558,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   const preferredProvider = settings.aiProvider || (isFirefox ? 'local' : 'openai');
   aiProviderSelect.value = isFirefox && preferredProvider === 'chrome-ai' ? 'local' : preferredProvider;
+  domainFallbackCheckbox.checked = settings.domainFallbackEnabled !== false;
   aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled === true; // explicit opt-in
   aiAllowCloudFallbackCheckbox.checked = settings.aiAllowCloudFallback === true; // default off — explicit opt-in
   const openaiResolved = globalThis.populateModelSelect(openaiModelSelect, 'openai', settings.openaiModel);
@@ -670,6 +674,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   const PROVIDER_LABELS_OPTIONS = {
+    domain: 'Group by domain',
     openai: 'OpenAI',
     claude: 'Claude',
     gemini: 'Gemini',
@@ -800,6 +805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // only means something with fallback on at all.
   function updateFallbackControlsVisibility() {
     const primary = aiProviderSelect.value || 'openai';
+    groupingFallbackSettings.hidden = primary === 'domain';
     const fallbackOn = aiFallbackEnabledCheckbox.checked;
     cloudFallbackRow.style.display = fallbackOn && LOCAL_PROVIDERS_OPTIONS.includes(primary) ? '' : 'none';
     fallbackOrderItem.style.display = fallbackOn ? '' : 'none';
@@ -863,14 +869,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const label = (p) => PROVIDER_LABELS_OPTIONS[p] || p;
 
     if (!desc.fallbackEnabled) {
-      aiFallbackHintEl.textContent = `Fallback disabled — only ${label(desc.primary)} will be used.`;
+      aiFallbackHintEl.textContent = 'Fallback AI providers are off.';
       return;
     }
 
     const parts = [
       desc.chain.length > 1
         ? `Fallback order: ${desc.chain.map(label).join(' → ')}.`
-        : `No fallback available — only ${label(desc.primary)} will be used.`
+        : 'No other AI provider is ready.'
     ];
 
     const statusByProvider = new Map(desc.entries.map((e) => [e.provider, e.status]));
@@ -892,7 +898,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         parts.push('Cloud providers will never be used.');
       }
     } else if (desc.chain.length > 1) {
-      parts.push('Cloud primaries never fall back to local providers.');
+      parts.push('Cloud primaries only try other cloud AI providers.');
     } else {
       const customStatus = statusByProvider.get('custom-openai');
       if (customStatus === 'missing-base-url') {
@@ -950,6 +956,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   aiFallbackEnabledCheckbox.addEventListener('change', async () => {
     await chrome.storage.local.set({ aiFallbackEnabled: aiFallbackEnabledCheckbox.checked });
     refreshProviderUi();
+  });
+
+  domainFallbackCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ domainFallbackEnabled: domainFallbackCheckbox.checked });
   });
 
   aiAllowCloudFallbackCheckbox.addEventListener('change', async () => {
@@ -1172,7 +1182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Check availability up front: loudly (status box) when Chrome AI is the primary,
   // silently otherwise — the fallback hint needs the state either way.
-  if (!isFirefox) checkChromeAi({ silent: aiProviderSelect.value !== 'chrome-ai' });
+  if (!isFirefox && aiProviderSelect.value !== 'domain') checkChromeAi({ silent: aiProviderSelect.value !== 'chrome-ai' });
 
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });
@@ -1489,7 +1499,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function organizeWindow({ refineOnce = false } = {}) {
     organizeTabsBtn.disabled = true;
     reorganizeWindowBtn.disabled = true;
-    actionStatus.textContent = refineOnce ? 'Refining groups in this window...' : 'Deduplicating and organizing tabs with AI...';
+    const progress = refineOnce ? 'Refining groups in this window...' : 'Organizing tabs...';
+    actionStatus.textContent = aiProviderSelect.value === 'domain' ? 'Grouping tabs by domain...' : progress;
     actionStatus.className = 'status info';
 
     try {
@@ -1540,6 +1551,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (result.fallbackInfo) {
           msg += ` Used ${result.providerUsedLabel} after ${result.fallbackInfo.primaryFailedLabel} failed (${result.fallbackInfo.primaryFailedSummary}).`;
+        } else if (result.domainFallback) {
+          msg += ' Used domain grouping because no AI model was available.';
+        } else if (result.providerUsed === 'domain') {
+          msg += ' Grouped by domain.';
         }
         actionStatus.textContent = msg;
         actionStatus.className = 'status success';

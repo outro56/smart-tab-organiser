@@ -413,6 +413,7 @@ function parseAiGroupsResponse(content) {
 
 // ---- AI provider error handling --------------------------------------------------------------
 const PROVIDER_LABELS = {
+  domain: 'Group by domain',
   openai: 'OpenAI',
   claude: 'Claude',
   gemini: 'Gemini',
@@ -539,12 +540,13 @@ async function customOpenAIHostAccessStatus(rawBaseUrl) {
 }
 
 class AiProviderError extends Error {
-  constructor({ provider, status, message, rawBody, cause }) {
+  constructor({ provider, status, message, rawBody, cause, unavailable = false }) {
     super(message || 'AI provider error');
     this.name = 'AiProviderError';
     this.provider = provider;
     this.status = status || null;
     this.rawBody = rawBody;
+    this.unavailable = unavailable;
     if (cause) this.cause = cause;
   }
 }
@@ -586,6 +588,9 @@ function classifyAiError(err) {
   const lower = baseMsg.toLowerCase();
   const label = provider ? providerLabel(provider) : 'AI provider';
 
+  if (err?.unavailable) {
+    return { type: 'unavailable', provider, summary: baseMsg, detail: baseMsg, hint: '' };
+  }
   if (lower.includes('cors')) {
     return {
       type: 'cors',
@@ -643,7 +648,7 @@ function classifyAiError(err) {
       hint: `${label} is having issues. Try again or enable fallback providers.`,
     };
   }
-  if (/failed to fetch|network|networkerror/.test(lower)) {
+  if (/failed to fetch|network|could not reach|load failed/.test(lower)) {
     return {
       type: 'network',
       provider,
@@ -706,6 +711,10 @@ function classifyAiError(err) {
   };
 }
 
+const AI_AVAILABILITY_FAILURES = new Set([
+  'unavailable', 'cors', 'auth', 'forbidden', 'rateLimit', 'modelMissing', 'server', 'network', 'timeout', 'missingKey'
+]);
+
 /** Single-line short summary suitable for the cramped Chrome notification body. */
 function shortFailureLabel(classification) {
   // Strip leading "<Provider> " from the summary so we can prefix with provider label ourselves
@@ -752,7 +761,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: 'dedupe-and-organize',
-      title: 'Organize tabs with AI',
+      title: 'Organize tabs',
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -860,7 +869,7 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
       title: 'Organizing tabs',
-      message: 'AI is organizing your tabs...'
+      message: 'Grouping tabs in this window...'
     });
 
     const result = await organizeTabs(
@@ -892,9 +901,9 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
       includeLabelGroups: options.includeLabelGroups === false ? false : undefined,
     });
     const fb = result.fallbackInfo;
-    const titleSuccess = fb
-      ? `Tabs organized (used ${providerLabel(fb.providerUsed)} fallback)`
-      : 'Tabs organized';
+    const titleSuccess = result.providerUsed === 'domain'
+      ? 'Tabs grouped by domain'
+      : fb ? `Tabs organized (used ${providerLabel(fb.providerUsed)} fallback)` : 'Tabs organized';
     let message = result.refined
       ? `Moved ${result.movedCount} tab(s); created ${result.groupCount} group(s).`
       : `Grouped ${result.groupedCount} tab(s); created ${result.groupCount} group(s).`;
@@ -906,6 +915,8 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
     }
     if (fb) {
       message += `\n${fb.primaryFailedLabel} failed: ${fb.primaryFailedSummary}`;
+    } else if (result.domainFallback) {
+      message += ' Used domain grouping because no AI model was available.';
     }
     chrome.notifications.create({
       type: 'basic',
@@ -4052,7 +4063,7 @@ async function checkChromeAiAvailability() {
 async function ensureChromeAiReady() {
   const status = await checkChromeAiAvailability();
   if (!status.available) {
-    throw new Error(status.message);
+    throw new AiProviderError({ provider: 'chrome-ai', message: status.message, unavailable: true });
   }
   if (status.state === 'downloadable' || status.state === 'downloading') {
     chrome.notifications.create({
@@ -4077,10 +4088,11 @@ async function createChromeAiSession() {
   } catch (error) {
     // Chrome can require a user gesture to start the initial model download, which a
     // service worker doesn't have. The options page has a button that does have one.
-    if (error.name === 'NotAllowedError' || /user (gesture|activation)/i.test(error.message)) {
-      throw new Error('Chrome needs permission to download Gemini Nano first. Open this extension\'s options page and click "Download model".');
-    }
-    throw new Error(`Could not start Chrome built-in AI: ${error.message}`);
+    const needsGesture = error.name === 'NotAllowedError' || /user (gesture|activation)/i.test(error.message);
+    const message = needsGesture
+      ? 'Chrome needs permission to download Gemini Nano first. Open this extension\'s options page and click "Download model".'
+      : `Could not start Chrome built-in AI: ${error.message}`;
+    throw new AiProviderError({ provider: 'chrome-ai', message, cause: error, unavailable: true });
   }
 }
 
@@ -4395,6 +4407,9 @@ function normalizeFallbackOrder(saved) {
  */
 async function describeProviderChain(settings) {
   const primary = preferredAiProvider(settings);
+  if (primary === 'domain') {
+    return { primary, order: [], chain: [], entries: [], fallbackEnabled: false, localPrimary: false };
+  }
   const order = normalizeFallbackOrder(settings.aiFallbackOrder).filter(provider => !isFirefox || provider !== 'chrome-ai');
   const fallbackEnabled = settings.aiFallbackEnabled === true;
   const localPrimary = isLocalProvider(primary);
@@ -4478,6 +4493,26 @@ function normalizeGroupTitle(title) {
 
 function groupTitleKey(title) {
   return normalizeGroupTitle(title).toLowerCase();
+}
+
+/** Use the hostname with a leading www. treated as an alias for the bare domain. */
+function groupTabsByDomain(tabs) {
+  const domains = new Map();
+  tabs.forEach((tab, index) => {
+    let url;
+    try {
+      url = new URL(tab.url);
+    } catch {
+      return;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+    const host = normalizeExcludedHostname(url.hostname);
+    const groupName = host.replace(/^www\.(?=.+\.)/, '');
+    if (!groupName) return;
+    if (!domains.has(groupName)) domains.set(groupName, { groupName, tabIndices: [] });
+    domains.get(groupName).tabIndices.push(index + 1);
+  });
+  return [...domains.values()];
 }
 
 function groupPositions(tabs) {
@@ -4609,17 +4644,18 @@ function buildRefineContext(groupFamilies, tabs) {
 /**
  * Apply refine-mode AI assignments tab by tab. Tabs already in their assigned group and
  * tabs the model omitted are left alone. Existing groups are reused by title.
- * Undersized new groups go to Misc when there are enough tabs.
+ * AI assignments can collect undersized groups in Misc. Domain assignments keep them separate.
  */
 async function applyRefinedGroups({
   groups, tabsForAI, snapshots, windowId, groupTitleById, groupDetailsById, minTabs, excludedDomains, takenKeys,
-  protectedIds, reservedKeys, liveGroups, positions, createGroup
+  protectedIds, reservedKeys, liveGroups, positions, createGroup, domainGrouping
 }) {
   const titleKey = takenKeys ? groupTitleKey : title => (title || '').trim().toLowerCase();
+  const miscKey = domainGrouping ? null : 'misc';
   const targetByTabId = new Map();
   const targetNames = new Map();
   for (const group of groups) {
-    // Existing group names are matched in full; only a new name is shortened for Chrome.
+    // Existing group names are matched in full.
     const name = (group.groupName || '').trim();
     if (!name || !Array.isArray(group.tabIndices)) continue;
     const key = titleKey(name);
@@ -4659,8 +4695,8 @@ async function applyRefinedGroups({
   // Drop stale tabs before applying the minimum-size rule, so a group is judged by the
   // tabs that will actually move rather than by the assignment the model proposed.
   const threshold = Math.max(1, minTabs);
-  const miscTabIds = [...(movesByTarget.get('misc') || [])];
-  movesByTarget.delete('misc');
+  const miscTabIds = [...(movesByTarget.get(miscKey) || [])];
+  movesByTarget.delete(miscKey);
   for (const [target, tabIds] of [...movesByTarget]) {
     const liveTabIds = await filterUnchangedTabIds(tabIds, snapshots, windowId, excludedDomains);
     if (liveTabIds.length === 0) {
@@ -4668,13 +4704,13 @@ async function applyRefinedGroups({
       continue;
     }
     if (!existingGroupIdByName.has(target) && liveTabIds.length <= threshold) {
-      miscTabIds.push(...liveTabIds);
+      if (miscKey) miscTabIds.push(...liveTabIds);
       movesByTarget.delete(target);
       continue;
     }
     movesByTarget.set(target, liveTabIds);
   }
-  movesByTarget.set('misc', miscTabIds);
+  if (miscKey) movesByTarget.set(miscKey, miscTabIds);
 
   const usedColors = new Set(liveGroups.map(group => group.color).filter(Boolean));
   let movedCount = 0;
@@ -4696,7 +4732,8 @@ async function applyRefinedGroups({
         existingGroupId = liveGroup.id;
         existingGroupIdByName.set(target, liveGroup.id);
       } else {
-        if (target === 'misc' && liveTabIds.length < 2) continue;
+        if (target === miscKey && liveTabIds.length < 2) continue;
+        if (domainGrouping && liveTabIds.length <= threshold) continue;
         // Recreate an emptied original group with its original title and colour.
         const details = existingGroupDetailsByName.get(target) || {title: target, color: 'grey'};
         const recreatedId = await createGroup(liveTabIds, {
@@ -4710,25 +4747,24 @@ async function applyRefinedGroups({
       }
     }
     // A tab can drop out between the two checks, so reapply the new-group threshold here.
-    if (existingGroupId === undefined && target === 'misc' && liveTabIds.length < 2) continue;
-    if (existingGroupId === undefined && target !== 'misc' && liveTabIds.length <= threshold) {
-      miscTabIds.push(...liveTabIds);
+    if (existingGroupId === undefined && target === miscKey && liveTabIds.length < 2) continue;
+    if (existingGroupId === undefined && target !== miscKey && liveTabIds.length <= threshold) {
+      if (miscKey) miscTabIds.push(...liveTabIds);
       continue;
     }
     if (existingGroupId !== undefined) {
       await chrome.tabs.group({ groupId: existingGroupId, tabIds: liveTabIds });
     } else {
       let color = 'grey';
-      if (target !== 'misc') {
+      if (target !== miscKey) {
         const available = CHROME_TAB_GROUP_COLORS.filter(c => !usedColors.has(c));
         color = available.length > 0
           ? available[0]
           : CHROME_TAB_GROUP_COLORS[createdGroupCount % CHROME_TAB_GROUP_COLORS.length];
       }
-      const groupId = await createGroup(liveTabIds, {
-        title: target === 'misc' ? 'Misc' : allocateGroupTitle(targetNames.get(target), takenKeys),
-        color
-      });
+      const name = target === miscKey ? 'Misc' : targetNames.get(target);
+      const title = domainGrouping ? name : allocateGroupTitle(name, takenKeys);
+      const groupId = await createGroup(liveTabIds, { title, color });
       if (groupId === null) continue;
       usedColors.add(color);
       existingGroupIdByName.set(target, groupId);
@@ -4752,7 +4788,7 @@ function routeReservedAssignments(groups, reservedKeys) {
 
 async function applyOrganizedGroups({
   groups, tabsForAI, snapshots, windowId, minTabs, excludedDomains, takenKeys,
-  liveGroups, protectedIds, reservedKeys, groupTitleById, mergeIntoExisting, preservedIds, positions, createGroup
+  liveGroups, protectedIds, reservedKeys, groupTitleById, mergeIntoExisting, preservedIds, positions, createGroup, domainGrouping
 }) {
   const retainedTabIds = takenKeys ? matchedGroupTabs(groups, tabsForAI, groupTitleById) : null;
   await ungroupReorganizableTabs(snapshots, windowId, excludedDomains, retainedTabIds);
@@ -4775,12 +4811,12 @@ async function applyOrganizedGroups({
     if (liveTabIds.length === 0) continue;
     liveTabIds.forEach(id => usedTabIds.add(id));
     const destination = destinations.get(key)?.[0];
-    if (key === 'misc' || (!destination && liveTabIds.length <= Math.max(1, minTabs))) {
-      miscTabIds.push(...liveTabIds);
+    if ((!domainGrouping && key === 'misc') || (!destination && liveTabIds.length <= Math.max(1, minTabs))) {
+      if (!domainGrouping) miscTabIds.push(...liveTabIds);
     } else if (destination) {
       groupedCount += await addTabsToExistingGroup(destination.id, liveTabIds, snapshots);
     } else {
-      const title = allocateGroupTitle(group.groupName.trim(), takenKeys);
+      const title = domainGrouping ? key : allocateGroupTitle(group.groupName.trim(), takenKeys);
       const color = CHROME_TAB_GROUP_COLORS.find(value => !usedColors.has(value))
         || CHROME_TAB_GROUP_COLORS[groupCount % CHROME_TAB_GROUP_COLORS.length];
       if (await createGroup(liveTabIds, { title, color }) === null) continue;
@@ -4789,6 +4825,8 @@ async function applyOrganizedGroups({
       groupCount++;
     }
   }
+
+  if (domainGrouping) return { groupedCount, groupCount };
 
   for (const tab of tabsForAI) {
     if (tab.groupId < 0 && !usedTabIds.has(tab.id)) miscTabIds.push(tab.id);
@@ -4835,7 +4873,8 @@ async function organizeTabs(
       'localBaseUrl', 'localModel', 'customOpenaiBaseUrl', 'customOpenaiKey', 'customOpenaiModel',
       'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
       'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow',
-      'excludedDomains', 'refineExistingGroups', 'uniqueGroupNames', 'limitGroupsPerWindow', 'maxGroupsPerWindow'
+      'excludedDomains', 'refineExistingGroups', 'uniqueGroupNames', 'limitGroupsPerWindow', 'maxGroupsPerWindow',
+      'domainFallbackEnabled'
     ]);
     const excludedDomains = parseExcludedDomains(settings.excludedDomains);
     const refine = refineOnce || settings.refineExistingGroups === true;
@@ -4926,9 +4965,11 @@ async function organizeTabs(
     // Host access is checked here. User-gesture handlers own permission requests.
     const providerChain = await buildProviderChain(settings);
     const providerStatuses = await computeProviderStatuses(providerChain, settings);
-    const primary = providerChain[0] || 'openai';
+    const primary = preferredAiProvider(settings);
+    const domainPrimary = primary === 'domain';
+    const allowDomainFallback = settings.domainFallbackEnabled !== false;
     const usableChain = providerStatuses.filter(entry => entry.status === 'ready').map(entry => entry.provider);
-    if (usableChain.length === 0) {
+    if (!domainPrimary && !allowDomainFallback && usableChain.length === 0) {
       const status = providerStatuses.find(entry => entry.provider === primary)?.status || 'no-key';
       return { success: false, error: `${providerLabel(primary)} is not configured. ${providerStatusFixMessage(primary, status)}` };
     }
@@ -4972,6 +5013,14 @@ async function organizeTabs(
       }
     }
 
+    const domainFallback = !domainPrimary && !groups && allowDomainFallback
+      && failures.every(failure => AI_AVAILABILITY_FAILURES.has(failure.classification.type));
+    const domainGrouping = domainPrimary || domainFallback;
+    if (domainGrouping) {
+      groups = groupTabsByDomain(tabsForAI);
+      providerUsed = 'domain';
+    }
+
     if (!groups) {
       return {
         success: false,
@@ -4999,7 +5048,9 @@ async function organizeTabs(
 
     const mergedBeforeAssignments = maxGroups === null ? 0 : await mergeMatchingGroups(tabsForAISnapshots);
     const liveGroups = await chrome.tabGroups.query({ windowId: currentWindowId });
-    groups = routeReservedAssignments(groups, reservedKeys);
+    groups = domainGrouping
+      ? groups.filter(group => !reservedKeys.has(groupTitleKey(group.groupName)))
+      : routeReservedAssignments(groups, reservedKeys);
     if (mergeDuplicateNames) groups = mergeGroupBatches([groups], normalizeGroupTitle);
     const takenKeys = mergeDuplicateNames ? new Set([
       ...reservedKeys, 'misc',
@@ -5022,7 +5073,8 @@ async function organizeTabs(
     };
     const assignments = {
       groups, tabsForAI, snapshots: tabsForAISnapshots, windowId: currentWindowId, minTabs,
-      excludedDomains, takenKeys, liveGroups, protectedIds: alwaysPreservedGroupIds, reservedKeys, positions, createGroup
+      excludedDomains, takenKeys, liveGroups, protectedIds: alwaysPreservedGroupIds, reservedKeys, positions, createGroup,
+      domainGrouping
     };
     const result = refine
       ? await applyRefinedGroups({ ...assignments, groupTitleById, groupDetailsById })
@@ -5045,6 +5097,7 @@ async function organizeTabs(
       } : result),
       mergedGroupCount,
       groupLimitReached,
+      domainFallback,
       providerUsed,
       providerUsedLabel: providerUsed ? providerLabel(providerUsed) : null,
       fallbackInfo

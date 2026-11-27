@@ -252,7 +252,7 @@
               <div class="setting-info">
                 <label class="setting-label" for="organizeOnClick">Group tabs when you click the toolbar icon</label>
                 <p class="setting-description">
-                  Adds AI grouping when you click the extension icon. Duplicate removal follows the setting above.
+                  Groups tabs when you click the extension icon. Duplicate removal follows the setting above.
                 </p>
               </div>
               <label class="switch">
@@ -274,9 +274,10 @@
           <div class="setting-item">
             <div class="setting-info">
               <label class="setting-label" for="aiProvider">AI provider</label>
-              <p class="setting-description" id="providerCheckHint">A green check means the selected model passed its last availability check.</p>
+              <p class="setting-description" id="providerCheckHint">A green check marks a verified model or the always-available domain option.</p>
             </div>
             <select id="aiProvider" class="provider-select" aria-describedby="providerCheckHint">
+              <option value="domain">Group by domain (on-device)</option>
               <option value="openai">OpenAI (cloud)</option>
               <option value="claude">Claude (cloud)</option>
               <option value="gemini">Gemini (cloud)</option>
@@ -296,6 +297,11 @@
               </select>
             </div>
             <div id="otherProviders">
+              <div class="provider-card" data-provider="domain">
+                <div class="provider-card-header">Group by domain <span class="primary-badge">Primary</span></div>
+                <p class="provider-card-desc">Group tabs by hostname on this device. For example, www.example.com joins example.com. Other subdomains get their own groups.</p>
+              </div>
+
               <div class="provider-card" data-provider="chrome-ai">
                 <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
                 <p class="provider-card-desc">Gemini Nano, running inside Chrome itself. Chrome downloads the model (a few GB) once; after that it works fully offline.</p>
@@ -403,11 +409,21 @@
               </div>
             </div>
           </details>
-          <details class="settings-disclosure">
+          <details class="settings-disclosure" id="groupingFallbackSettings">
             <summary>Fallback settings</summary>
             <div class="setting-item">
               <div class="setting-info">
-                <label class="setting-label" for="aiFallbackEnabled">Use fallback providers</label>
+                <label class="setting-label" for="domainFallbackEnabled">Fall back to Group by domain</label>
+                <p class="setting-description">Use domain grouping when no AI model is ready or reachable. On by default.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="domainFallbackEnabled" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="aiFallbackEnabled">Use fallback AI providers</label>
                 <p class="setting-description">
                   This setting is off by default. If enabled, the extension tries eligible providers in order after the preferred provider fails.
                   A local primary tries only the other local provider unless you also allow cloud fallback.

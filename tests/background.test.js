@@ -598,6 +598,7 @@ test('automatic organization keeps local host access check-only', async () => {
   };
   chrome.storage.local.get = async () => ({
     aiProvider: 'local',
+    domainFallbackEnabled: false,
     aiFallbackEnabled: false,
     localBaseUrl: 'http://192.168.1.20:11434',
     localModel: 'llama3.1:8b',
@@ -1019,6 +1020,7 @@ test('organizeTabs never asks for host access itself', async () => {
 
   chrome.storage.local.get = async () => ({
     aiProvider: 'custom-openai',
+    domainFallbackEnabled: false,
     aiFallbackEnabled: false,
     customOpenaiBaseUrl: 'https://api.example.com/v1',
     customOpenaiModel: 'model-a',
@@ -1059,6 +1061,7 @@ test('a disallowed local address stops before any tab mutation', async () => {
 
   chrome.storage.local.get = async () => ({
     aiProvider: 'local',
+    domainFallbackEnabled: false,
     aiFallbackEnabled: false,
     localModel: 'llama3.1:8b',
     localBaseUrl: 'http://8.8.8.8:11434/v1',
@@ -1126,6 +1129,7 @@ test('automatic organization never prompts for host access', async () => {
 
   chrome.storage.local.get = async () => ({
     aiProvider: 'local',
+    domainFallbackEnabled: false,
     aiFallbackEnabled: false,
     localModel: 'llama3.1:8b',
     localBaseUrl: 'http://192.168.1.20:11434/v1',
@@ -2696,6 +2700,157 @@ function makeTab(id, groupId, title, url, extra = {}) {
   return { id, windowId: 1, index: id, title, url, groupId, pinned: false, splitViewId: -1, ...extra };
 }
 
+test('domain mode groups by hostname on-device and respects exclusions and window boundaries', async () => {
+  const host = 'docs.developer-portal.example.co.uk';
+  const world = setupOrganizeWorld({
+    settings: {
+      aiProvider: 'domain', aiFallbackEnabled: true, aiAllowCloudFallback: true,
+      excludedDomains: 'private.example.co.uk',
+    },
+    tabs: [
+      makeTab(1, -1, 'One', `https://www.${host}/one`),
+      makeTab(2, -1, 'Two', `http://${host.toUpperCase()}.:8080/two#section`),
+      makeTab(3, -1, 'Sibling hostname', 'https://admin.developer-portal.example.co.uk/'),
+      makeTab(4, -1, 'Unrelated', 'https://unrelated.example.com/'),
+      makeTab(5, -1, 'Excluded one', 'https://private.example.co.uk/one'),
+      makeTab(6, -1, 'Excluded two', 'https://private.example.co.uk/two'),
+      makeTab(7, -1, 'Pinned', `https://${host}/pinned`, { pinned: true }),
+      makeTab(8, 10, 'Managed', `https://${host}/review`),
+      makeTab(9, -1, 'Other window', `https://${host}/other`, { windowId: 2 }),
+    ],
+    groups: [{ id: 10, title: 'PRs' }],
+  });
+  let requests = 0;
+  world.context.fetch = async () => { requests++; throw new Error('Unexpected request'); };
+  let availabilityChecks = 0;
+  world.context.LanguageModel = { availability() { availabilityChecks++; return 'available'; } };
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.providerUsed, 'domain');
+  assert.equal(result.domainFallback, false);
+  assert.equal(requests, 0);
+  assert.equal(availabilityChecks, 0);
+  assert.deepEqual(world.groups.map(group => group.title), ['PRs', host]);
+  const groupId = world.groups[1].id;
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [groupId, groupId, -1, -1, -1, -1, -1, 10, -1]);
+});
+
+test('domain mode reuses a matching group for one tab and respects the window cap', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'domain', limitGroupsPerWindow: true, maxGroupsPerWindow: 1 },
+    tabs: [
+      makeTab(1, 10, 'Existing one', 'https://example.com/one'),
+      makeTab(2, 10, 'Existing two', 'https://example.com/two'),
+      makeTab(3, -1, 'Matching', 'https://www.example.com/three'),
+      makeTab(4, -1, 'Other one', 'https://example.org/one'),
+      makeTab(5, -1, 'Other two', 'https://example.org/two'),
+    ],
+    groups: [{ id: 10, title: 'example.com', color: 'blue' }],
+  });
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.groupLimitReached, 1);
+  assert.equal(result.groupCount, 0);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 10, 10, -1, -1]);
+});
+
+test('domain refine moves tabs to matching domains and keeps unrelated singletons out of Misc', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'domain', refineExistingGroups: true },
+    tabs: [
+      makeTab(1, 10, 'Originally grouped', 'https://example.com/one'),
+      makeTab(2, -1, 'Matching', 'https://www.example.com/two'),
+      makeTab(3, -1, 'Unrelated one', 'https://example.org/'),
+      makeTab(4, -1, 'Unrelated two', 'https://example.net/'),
+    ],
+    groups: [{ id: 10, title: 'Notes' }],
+  });
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.movedCount, 2);
+  const liveGroups = await world.chrome.tabGroups.query({ windowId: 1 });
+  assert.deepEqual(liveGroups.map(group => group.title), ['example.com']);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [liveGroups[0].id, liveGroups[0].id, -1, -1]);
+});
+
+test('domain fallback works with a missing key, an offline server, or unavailable Chrome AI', async t => {
+  for (const scenario of [
+    { name: 'missing key', settings: { openaiKey: '' }, expectedRequests: 0 },
+    { name: 'offline server', settings: { aiProvider: 'local', localModel: 'test-model' }, expectedRequests: 1 },
+    { name: 'unavailable Chrome AI', settings: { aiProvider: 'chrome-ai' }, expectedRequests: 0 },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const world = setupOrganizeWorld({
+        settings: scenario.settings,
+        tabs: [1, 2].map(id => makeTab(id, -1, 'Docs', `https://example.com/${id}`)),
+        groups: [],
+      });
+      let requests = 0;
+      world.context.fetch = async (_url, options) => {
+        if (options?.method === 'POST') requests++;
+        throw new TypeError('Failed to fetch');
+      };
+
+      const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+      assert.equal(result.success, true);
+      assert.equal(result.providerUsed, 'domain');
+      assert.equal(result.domainFallback, true);
+      assert.equal(requests, scenario.expectedRequests);
+      assert.deepEqual(world.groups.map(group => group.title), ['example.com']);
+    });
+  }
+});
+
+test('turning domain fallback off preserves the missing-provider error', async () => {
+  const world = setupOrganizeWorld({
+    settings: { openaiKey: '', domainFallbackEnabled: false },
+    tabs: [1, 2].map(id => makeTab(id, -1, 'Docs', `https://example.com/${id}`)),
+    groups: [],
+  });
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /OpenAI is not configured/);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [-1, -1]);
+});
+
+test('a configured AI fallback runs before domain grouping', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'claude', aiFallbackEnabled: true },
+    tabs: [1, 2].map(id => makeTab(id, -1, 'Docs', `https://example.com/${id}`)),
+    groups: [],
+  });
+  world.respondWith([{ groupName: 'Documentation', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.providerUsed, 'openai');
+  assert.equal(result.domainFallback, false);
+  assert.deepEqual(world.groups.map(group => group.title), ['Documentation']);
+});
+
+test('automatic organization groups by domain without a configured model', async () => {
+  const world = setupOrganizeWorld({
+    settings: { autoOrganizeEnabled: true, openaiKey: '', closeDuplicateTabs: false },
+    tabs: [1, 2].map(id => makeTab(id, -1, 'Docs', `https://example.com/${id}`)),
+    groups: [],
+  });
+
+  await world.context.executeAutoOrganize(1);
+
+  assert.deepEqual(world.groups.map(group => group.title), ['example.com']);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [world.groups[0].id, world.groups[0].id]);
+});
+
 for (const entry of ['settings', 'toolbar']) {
   test(`the ${entry} reorganize action refines only its window and keeps saved settings`, async () => {
     const world = setupOrganizeWorld({
@@ -2786,9 +2941,9 @@ test('later local batches keep named groups when the model also assigns those ta
   assert.deepEqual(world.calls.group.map(call => call.tabIds), [[1, 2], [3, 4]]);
 });
 
-test('a failed final local batch leaves the original tab groups intact', async () => {
+test('without domain fallback, a failed final local batch leaves the original tab groups intact', async () => {
   const world = setupOrganizeWorld({
-    settings: { aiProvider: 'local', localModel: 'test-model' },
+    settings: { aiProvider: 'local', localModel: 'test-model', domainFallbackEnabled: false },
     tabs: ['Docs one', 'Docs two', 'Recipe one', 'Recipe two'].map((title, index) =>
       makeTab(index + 1, index < 2 ? 10 : -1, title, `https://example.com/${index}`)
     ),

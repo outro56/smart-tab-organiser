@@ -17,11 +17,13 @@ Install signed 1.3.3 or later once and keep Firefox's automatic add-on updates e
 
 Right-click the extension icon and choose **Edit extension options** to open Settings. Use a regular Firefox window if the extension lacks private-window access.
 
-1. Open **Options → AI models** and choose a provider.
+1. Open **Options → AI models** and choose **Group by domain (on-device)** or an AI provider.
 2. In **Grouping**, select **Organize tabs now** or turn on **Group new tabs automatically**.
 3. Turn off **Close duplicate tabs** to keep every copy open. Use **Duplicate matching** to control how query parameters and URL fragments are compared.
 
 Use **More actions → Reorganize this window**, or the matching toolbar menu item, to refine existing groups once with your saved provider and grouping rules.
+
+Domain grouping needs no model or server. It uses hostnames, so `www.example.com` joins `example.com` and other subdomains stay separate. A lone tab can join an existing matching group. New groups follow the minimum size and window limit. When no AI model is available, the extension falls back to this mode by default. Change this under **AI models → Fallback settings**.
 
 | On-device setup | Configuration |
 | --- | --- |

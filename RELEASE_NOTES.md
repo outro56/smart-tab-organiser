@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.3.9
+
+- Add **Group by domain (on-device)**. It groups tabs by hostname without a model, API key, or server.
+- Use domain grouping by default when no AI model is configured or available. The fallback can be turned off in **AI models → Fallback settings**.
+
 ## 1.3.8
 
 - Add **Reorganize this window** to **More actions** and the toolbar menu. It refines existing groups for one run and keeps your saved settings.

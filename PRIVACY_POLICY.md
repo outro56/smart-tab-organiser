@@ -98,11 +98,15 @@ RFC 6598 Shared Address Space (`100.64.0.0/10`) is not included. Tailscale uses 
 
 ### Provider fallback
 
-All provider fallback is off by default. The user must enable fallback before the extension attempts another provider.
+Fallback to other AI providers is off by default. The user must enable AI fallback before the extension attempts another AI provider.
 
 A cloud primary can use another configured cloud provider as a fallback. A local primary requires a separate cloud-fallback setting before it can use a cloud provider.
 
 The options page shows the provider order before the user starts organization.
+
+### Group by domain
+
+Domain grouping reads tab hostnames and creates groups on the user's computer. The grouping step makes no network requests and sends no tab data to an AI provider. The user can select domain grouping directly or use it as a fallback when no AI model is available. The domain fallback is on by default and can be switched off independently.
 
 ### Chrome built-in AI
 
