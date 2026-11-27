@@ -13,8 +13,6 @@ Use the browser-specific path below. Build the Firefox ZIP with `python3 scripts
 
 Install signed 1.3.3 or later once and keep Firefox's automatic add-on updates enabled. Firefox checks the fork for newer signed releases. To test a local build, open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose the ZIP in `dist/firefox/`. Firefox removes temporary add-ons on restart.
 
-For release maintainers, attach `smart-tab-organiser-firefox-vVERSION-signed.xpi` to the corresponding stable GitHub release before publishing it. Use the [Mozilla-signed XPI](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/). The release workflow generates `firefox-updates.json` from that XPI. Firefox downloads this file from the latest release and verifies the XPI it names.
-
 ## Set up grouping
 
 Right-click the extension icon and choose **Edit extension options** to open Settings. Use a regular Firefox window if the extension lacks private-window access.
@@ -60,5 +58,20 @@ Issue labels and the **Closed** issue group use GitHub separately.
 ## Develop
 
 All runtime files live in `extension/`. The build packages those files with a browser-specific manifest. Run `sh scripts/validate.sh` with Node.js and Python 3 to run the tests, validate the store assets, and rebuild both outputs.
+
+### Sign and release for Firefox
+
+Mozilla signs the extension for permanent installation. We use unlisted signing and distribute the signed file through GitHub Releases.
+
+1. Bump `version` in `extension/manifest.json`. From the committed release revision, build the Firefox ZIP and archive the matching source.
+
+   ```sh
+   python3 scripts/build-release.py
+   git archive --format=zip -o dist/firefox/source.zip HEAD extension scripts/build-release.py README.md LICENSE PRIVACY_POLICY.md
+   ```
+
+2. Sign in to Mozilla’s Developer Hub. Open the existing **Smart Tab Organiser** entry and select **Upload a New Version**. Use **On your own** (unlisted). Upload `dist/firefox/smart-tab-organiser-firefox-vVERSION.zip`, provide `dist/firefox/source.zip` at the source code prompt, and submit. [Developer Hub](https://addons.mozilla.org/developers/addons) · [Mozilla submission guide](https://extensionworkshop.com/documentation/publish/submitting-an-add-on/#self-distribution)
+3. After approval, open the version page and download the signed XPI. Save it as `dist/firefox/smart-tab-organiser-firefox-vVERSION-signed.xpi`.
+4. Attach the signed XPI to the matching `vVERSION` GitHub release before publishing it as the latest stable release. The [release workflow](.github/workflows/firefox-update.yml) publishes `firefox-updates.json`. Verify that Firefox updates an older signed install in a test profile.
 
 [Release notes](RELEASE_NOTES.md) · [MIT license](LICENSE) · [Original project](https://github.com/twisterdotcom/smart-tab-organiser)
