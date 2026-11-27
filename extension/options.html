@@ -165,6 +165,7 @@
                 <label class="setting-label" for="preserveGroupsMinTabs">Only preserve groups with more than N tabs</label>
                 <p class="setting-description">
                   When set, only groups that have <strong>more than N</strong> tabs are preserved. Groups with N tabs or fewer are ungrouped and sent through AI organization again.
+                  <br>When matching names are merged, their tabs count together.
                   <br>Smaller sets go into Misc. A new Misc group needs at least two tabs.
                   <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved, and smaller groups are reorganized.
                 </p>
@@ -179,9 +180,7 @@
               <div class="setting-info">
                 <label class="setting-label" for="mergeIntoExisting">Merge tabs into existing groups</label>
                 <p class="setting-description">
-                  When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
-                  <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
-                  <br><strong>Pinned tabs and the "BOOKMARKS" group are always preserved</strong>; these options apply to other groups only.
+                  With "Preserve existing groups" on, share preserved group names and sample tab titles with your AI provider so it can suggest where ungrouped tabs fit.
                 </p>
                 <p id="mergeIntoExistingRefineNote" class="setting-warning" style="display: none;">
                   Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
@@ -209,13 +208,29 @@
 
             <div class="setting-item">
               <div class="setting-info">
-                <label class="setting-label" for="uniqueGroupNames">Keep group names unique</label>
-                <p class="setting-description">During grouping, add numbers to repeated group names in this window. On by default.</p>
+                <label class="setting-label" for="uniqueGroupNames">Merge groups with matching names</label>
+                <p class="setting-description">Reuse and merge matching groups in this window during organization. Capitalization and extra spaces don’t affect matches. On by default.</p>
               </div>
               <label class="switch">
                 <input type="checkbox" id="uniqueGroupNames" checked>
                 <span class="slider"></span>
               </label>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="limitGroupsPerWindow">Limit groups per window</label>
+                <p class="setting-description">During AI grouping, count every group in this window, including Misc. Once the limit is reached, tabs can still join existing groups.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="limitGroupsPerWindow">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div id="maxGroupsPerWindowRow" class="setting-item" hidden>
+              <label class="setting-label" for="maxGroupsPerWindow">Maximum groups per window</label>
+              <input type="number" id="maxGroupsPerWindow" min="1" step="1" value="16" class="api-key-input" style="width: 5em;">
             </div>
 
             <div class="setting-item">

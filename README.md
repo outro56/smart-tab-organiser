@@ -31,6 +31,10 @@ Use a server on this computer and leave cloud fallback and code review integrati
 
 In **Grouping rules and toolbar behaviour**, set excluded sites or choose how to handle existing groups. Use **Pinned tabs** to save URL rules.
 
+**Merge groups with matching names** is on by default. Grouping reuses matching groups in the current window and combines existing duplicates, ignoring case and extra spaces. Tabs join the leftmost matching group, which keeps its name and color.
+
+**Limit groups per window** is off by default. Enable it to start at 16 groups, or set your own maximum. During AI grouping, every group in the window counts, including Misc. The extension can still reuse matching groups at the limit. Duplicate merges can free space.
+
 The toolbar button tidies pinned tabs by default. Turn on **Group tabs when you click the toolbar icon** to also group tabs with AI. After a click, the button briefly shows a check or an exclamation mark. Hover over it to read the result.
 
 ## Debug grouping

@@ -265,6 +265,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const mergeIntoExistingCheckbox = document.getElementById('mergeIntoExisting');
   const refineExistingGroupsCheckbox = document.getElementById('refineExistingGroups');
   const uniqueGroupNamesCheckbox = document.getElementById('uniqueGroupNames');
+  const limitGroupsCheckbox = document.getElementById('limitGroupsPerWindow');
+  const maxGroupsInput = document.getElementById('maxGroupsPerWindow');
+  const maxGroupsRow = document.getElementById('maxGroupsPerWindowRow');
   const excludedDomainsInput = document.getElementById('excludedDomains');
   const sortTabsWithinGroupsByTitleCheckbox = document.getElementById('sortTabsWithinGroupsByTitle');
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
@@ -521,6 +524,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'refineExistingGroups', 'uniqueGroupNames',
+    'limitGroupsPerWindow', 'maxGroupsPerWindow',
     'excludedDomains', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
     'autoOrganizeEnabled', 'autoOrganizeDelay',
     'githubToken', 'prProvider', ...prProviderInputs.map(input => input.id),
@@ -583,6 +587,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   preserveGroupsCheckbox.checked = settings.preserveGroups !== false; // default to true
   refineExistingGroupsCheckbox.checked = settings.refineExistingGroups === true;
   uniqueGroupNamesCheckbox.checked = settings.uniqueGroupNames !== false;
+  limitGroupsCheckbox.checked = settings.limitGroupsPerWindow === true;
+  maxGroupsRow.hidden = !limitGroupsCheckbox.checked;
+  const savedMaxGroups = settings.maxGroupsPerWindow;
+  maxGroupsInput.value = Number.isSafeInteger(savedMaxGroups) && savedMaxGroups > 0
+    ? savedMaxGroups
+    : maxGroupsInput.defaultValue;
   excludedDomainsInput.value = typeof settings.excludedDomains === 'string' ? settings.excludedDomains : '';
   const savedMinTabs = settings.preserveGroupsMinTabs;
   preserveGroupsMinTabsInput.value = savedMinTabs !== undefined && savedMinTabs !== '' ? Number(savedMinTabs) : 1;
@@ -1192,6 +1202,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ uniqueGroupNames: uniqueGroupNamesCheckbox.checked });
   });
 
+  limitGroupsCheckbox.addEventListener('change', () => {
+    maxGroupsRow.hidden = !limitGroupsCheckbox.checked;
+    chrome.storage.local.set({ limitGroupsPerWindow: limitGroupsCheckbox.checked });
+  });
+
+  maxGroupsInput.addEventListener('change', () => {
+    const value = maxGroupsInput.valueAsNumber;
+    const maxGroupsPerWindow = Number.isSafeInteger(value) && value > 0 ? value : Number(maxGroupsInput.defaultValue);
+    maxGroupsInput.value = maxGroupsPerWindow;
+    chrome.storage.local.set({ maxGroupsPerWindow });
+  });
+
   function updatePreserveGroupsMinTabsWarning() {
     const n = parseInt(preserveGroupsMinTabsInput.value, 10);
     preserveGroupsMinTabsWarning.style.display = (!isNaN(n) && n > 3) ? '' : 'none';
@@ -1507,9 +1529,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (result.success) {
         let msg = result.refined
           ? `Moved ${result.movedCount} tab(s); created ${result.groupCount} group(s).`
-          : `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
-        if (result.renamedGroupCount > 0) {
-          msg += ` Renamed ${result.renamedGroupCount} duplicate group name(s).`;
+          : `Grouped ${result.groupedCount} tab(s); created ${result.groupCount} group(s).`;
+        if (result.mergedGroupCount > 0) {
+          msg += ` Merged ${result.mergedGroupCount} duplicate group(s).`;
+        }
+        if (result.groupLimitReached) {
+          msg += ` Reached the limit of ${result.groupLimitReached} groups per window.`;
         }
         if (result.fallbackInfo) {
           msg += ` Used ${result.providerUsedLabel} after ${result.fallbackInfo.primaryFailedLabel} failed (${result.fallbackInfo.primaryFailedSummary}).`;

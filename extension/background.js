@@ -325,6 +325,11 @@ function parseMinTabs(value) {
   return Number.isFinite(n) && n >= 0 ? n : 1;
 }
 
+function getWindowGroupLimit({ limitGroupsPerWindow, maxGroupsPerWindow }) {
+  if (limitGroupsPerWindow !== true) return null;
+  return Number.isSafeInteger(maxGroupsPerWindow) && maxGroupsPerWindow > 0 ? maxGroupsPerWindow : 16;
+}
+
 function normalizeTabIndices(indices) {
   if (!Array.isArray(indices)) return [];
   return indices
@@ -886,7 +891,13 @@ async function runOrganizeWithFeedback(windowId, options = {}) {
       : 'Tabs organized';
     let message = result.refined
       ? `Moved ${result.movedCount} tab(s); created ${result.groupCount} group(s).`
-      : `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+      : `Grouped ${result.groupedCount} tab(s); created ${result.groupCount} group(s).`;
+    if (result.mergedGroupCount > 0) {
+      message += ` Merged ${result.mergedGroupCount} duplicate group(s).`;
+    }
+    if (result.groupLimitReached) {
+      message += ` Reached the limit of ${result.groupLimitReached} groups per window.`;
+    }
     if (fb) {
       message += `\n${fb.primaryFailedLabel} failed: ${fb.primaryFailedSummary}`;
     }
@@ -1507,10 +1518,10 @@ async function filterUnchangedTabIds(tabIds, snapshotsById, windowId, excludedDo
 }
 
 /** Ungroup eligible tabs only after the AI returns a usable plan. */
-async function ungroupReorganizableTabs(snapshots, windowId, excludedDomains) {
+async function ungroupReorganizableTabs(snapshots, windowId, excludedDomains, retainedTabIds) {
   const tabIdsByGroup = new Map();
   for (const tab of snapshots.values()) {
-    if (!(tab.groupId >= 0)) continue;
+    if (!(tab.groupId >= 0) || retainedTabIds?.has(tab.id)) continue;
     if (!tabIdsByGroup.has(tab.groupId)) tabIdsByGroup.set(tab.groupId, []);
     tabIdsByGroup.get(tab.groupId).push(tab.id);
   }
@@ -4073,11 +4084,11 @@ async function createChromeAiSession() {
 const VALID_EMPTY_GROUPS = Symbol('validEmptyGroups');
 
 /** Merge per-batch group lists into one, combining groups that share a name. */
-function mergeGroupBatches(batches) {
+function mergeGroupBatches(batches, normalizeName = name => name.trim()) {
   const merged = new Map();
   for (const groups of batches) {
     for (const group of groups) {
-      const name = (group.groupName || '').trim();
+      const name = normalizeName(group.groupName || '');
       if (!name) continue;
       const key = name.toLowerCase();
       const existing = merged.get(key);
@@ -4186,9 +4197,10 @@ function tabTitleForSort(tab) {
 /** Reorder tabs inside each group A–Z by page title (skips managed groups and groups holding excluded tabs). */
 async function sortTabsWithinGroupsByTitle(windowId, alwaysPreservedGroupNames, excludedTabIds = null) {
   const groups = await chrome.tabGroups.query({ windowId });
+  const reservedKeys = new Set([...alwaysPreservedGroupNames].map(groupTitleKey));
   for (const group of groups) {
     const name = (group.title || '').trim().toUpperCase();
-    if (alwaysPreservedGroupNames.has(name)) continue;
+    if (alwaysPreservedGroupNames.has(name) || reservedKeys.has(groupTitleKey(group.title))) continue;
 
     const tabs = await chrome.tabs.query({ groupId: group.id });
     if (tabs.length <= 1) continue;
@@ -4452,35 +4464,138 @@ async function computeProviderStatuses(providerChain, settings) {
   );
 }
 
-/** Give colliding user groups numbered titles without taking a title another group already uses. */
-async function ensureUniqueGroupNames(windowId, originalIds, protectedIds, reservedNames) {
-  const groups = await chrome.tabGroups.query({ windowId });
-  const seen = new Set(reservedNames);
-  for (const group of groups) {
-    if (protectedIds.has(group.id)) seen.add((group.title || '').trim().toUpperCase());
+function normalizeGroupTitle(title) {
+  return (title || '').normalize('NFC').trim().replace(/\s+/g, ' ');
+}
+
+function groupTitleKey(title) {
+  return normalizeGroupTitle(title).toLowerCase();
+}
+
+function groupPositions(tabs) {
+  const positions = new Map();
+  for (const tab of tabs) {
+    if (tab.groupId < 0) continue;
+    positions.set(tab.groupId, Math.min(tab.index, positions.get(tab.groupId) ?? Infinity));
   }
-  const taken = new Set([...seen, ...groups.map(group => (group.title || '').trim().toUpperCase())]);
-  let renamed = 0;
-  const ordered = [...groups].sort((a, b) => Number(originalIds.has(b.id)) - Number(originalIds.has(a.id)));
-  for (const group of ordered) {
-    const title = (group.title || '').trim();
-    if (!title || protectedIds.has(group.id)) continue;
-    const key = title.toUpperCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      continue;
-    }
+  return positions;
+}
+
+function compareGroupPositions(a, b, positions) {
+  const left = positions.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+  const right = positions.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+  return left - right || a.id - b.id;
+}
+
+/** Prefer the leftmost group with a given name, regardless of its browser-assigned ID. */
+function indexNamedGroups(groups, protectedIds, reservedKeys, positions) {
+  const byName = new Map();
+  for (const group of [...groups].sort((a, b) => compareGroupPositions(a, b, positions))) {
+    const key = groupTitleKey(group.title);
+    if (!key || protectedIds.has(group.id) || reservedKeys.has(key)) continue;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(group);
+  }
+  return byName;
+}
+
+function allocateGroupTitle(name, takenKeys) {
+  let title = name.slice(0, 20).trimEnd();
+  // The full titles were matched before shortening. A collision here is a different topic.
+  if (takenKeys && groupTitleKey(title) !== groupTitleKey(name)) {
     let number = 2;
-    let candidate;
-    do {
+    while (takenKeys.has(groupTitleKey(title))) {
       const suffix = ` (${number++})`;
-      candidate = title.slice(0, 20 - suffix.length).trimEnd() + suffix;
-    } while (taken.has(candidate.toUpperCase()));
-    await chrome.tabGroups.update(group.id, { title: candidate });
-    taken.add(candidate.toUpperCase());
-    renamed++;
+      title = name.slice(0, 20 - suffix.length).trimEnd() + suffix;
+    }
   }
-  return renamed;
+  takenKeys?.add(groupTitleKey(title));
+  return title;
+}
+
+function matchedGroupTabs(groups, tabs, titlesById) {
+  const assigned = new Set();
+  const retained = new Set();
+  for (const group of groups) {
+    const key = groupTitleKey(group.groupName);
+    for (const index of group.tabIndices) {
+      const tab = tabs[index - 1];
+      if (!tab || assigned.has(tab.id)) continue;
+      assigned.add(tab.id);
+      if (groupTitleKey(titlesById.get(tab.groupId)) === key) retained.add(tab.id);
+    }
+  }
+  return retained;
+}
+
+/** Move whole groups so a duplicate with a tab the extension cannot move stays intact. */
+async function mergeDuplicateGroups(windowId, reservedKeys, aiEligibility, aiSnapshots) {
+  const [groups, windowTabs] = await Promise.all([
+    chrome.tabGroups.query({ windowId }),
+    chrome.tabs.query({ windowId }),
+  ]);
+  const byName = indexNamedGroups(groups, aiEligibility.alwaysPreservedGroupIds, reservedKeys, groupPositions(windowTabs));
+  let mergedGroupCount = 0;
+  for (const [key, [destination, ...duplicates]] of byName) {
+    for (const source of duplicates) {
+      const tabs = await chrome.tabs.query({ windowId, groupId: source.id });
+      if (tabs.some(tab => !isTabEligibleForAi(tab, aiEligibility))) continue;
+      const snapshots = new Map(tabs.map(tab => [tab.id, tab]));
+      const tabIds = await filterUnchangedTabIds([...snapshots.keys()], snapshots, windowId, aiEligibility.excludedDomains);
+      if (tabIds.length === 0 || tabIds.length !== tabs.length) continue;
+      const liveGroups = await chrome.tabGroups.query({ windowId });
+      const liveMatches = liveGroups.filter(group => groupTitleKey(group.title) === key);
+      if (!liveMatches.some(group => group.id === destination.id) || !liveMatches.some(group => group.id === source.id)) continue;
+      await chrome.tabs.group({ groupId: destination.id, tabIds });
+      // When merging before AI assignments, account for our own moves in the stale-tab check.
+      for (const id of tabIds) {
+        const snapshot = aiSnapshots?.get(id);
+        if (snapshot?.groupId === source.id) aiSnapshots.set(id, { ...snapshot, groupId: destination.id });
+      }
+      const remaining = await chrome.tabs.query({ windowId, groupId: source.id });
+      if (remaining.length === 0) mergedGroupCount++;
+    }
+  }
+  return mergedGroupCount;
+}
+
+function buildPreservedGroupContext(groupFamilies, tabs, minTabs, includeSamples, aiEligibility) {
+  const tabsByGroupId = new Map();
+  for (const tab of tabs) {
+    if (!(tab.groupId >= 0)) continue;
+    if (!tabsByGroupId.has(tab.groupId)) tabsByGroupId.set(tab.groupId, []);
+    tabsByGroupId.get(tab.groupId).push(tab);
+  }
+
+  const preservedIds = new Set(aiEligibility.alwaysPreservedGroupIds);
+  const groupsForPrompt = [];
+  for (const family of groupFamilies) {
+    const members = family.flatMap(group => tabsByGroupId.get(group.id) || []);
+    if (members.length <= minTabs) continue;
+    family.forEach(group => preservedIds.add(group.id));
+    if (includeSamples) {
+      groupsForPrompt.push({
+        title: family[0].title,
+        tabs: members.filter(tab => isTabEligibleForAi(tab, aiEligibility)),
+      });
+    }
+  }
+  return { preservedIds, groupsForPrompt };
+}
+
+function buildRefineContext(groupFamilies, tabs) {
+  const titlesById = new Map();
+  const groupsForPrompt = [];
+  for (const family of groupFamilies) {
+    const title = (family[0].title || '').trim();
+    if (!title) continue;
+    family.forEach(group => titlesById.set(group.id, title));
+    groupsForPrompt.push({ title });
+  }
+  return {
+    tabsForPrompt: tabs.map(tab => ({ ...tab, currentGroup: titlesById.get(tab.groupId) || '' })),
+    groupsForPrompt,
+  };
 }
 
 /**
@@ -4488,14 +4603,18 @@ async function ensureUniqueGroupNames(windowId, originalIds, protectedIds, reser
  * tabs the model omitted are left alone. Existing groups are reused by title.
  * Undersized new groups go to Misc when there are enough tabs.
  */
-async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, groupTitleById, groupDetailsById, minTabs, excludedDomains = null }) {
+async function applyRefinedGroups({
+  groups, tabsForAI, snapshots, windowId, groupTitleById, groupDetailsById, minTabs, excludedDomains, takenKeys,
+  protectedIds, reservedKeys, liveGroups, positions, createGroup
+}) {
+  const titleKey = takenKeys ? groupTitleKey : title => (title || '').trim().toLowerCase();
   const targetByTabId = new Map();
   const targetNames = new Map();
   for (const group of groups) {
     // Existing group names are matched in full; only a new name is shortened for Chrome.
     const name = (group.groupName || '').trim();
     if (!name || !Array.isArray(group.tabIndices)) continue;
-    const key = name.toLowerCase();
+    const key = titleKey(name);
     if (!targetNames.has(key)) targetNames.set(key, name);
     for (const idx of group.tabIndices) {
       const tab = Number.isInteger(idx) ? tabsForAI[idx - 1] : null;
@@ -4506,10 +4625,16 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
   const existingGroupIdByName = new Map();
   const existingGroupDetailsByName = new Map();
   for (const [id, title] of groupTitleById) {
-    const key = title.toLowerCase();
+    const key = titleKey(title);
     if (title && !existingGroupIdByName.has(key)) {
       existingGroupIdByName.set(key, id);
       existingGroupDetailsByName.set(key, groupDetailsById?.get(id) || {title, color: 'grey'});
+    }
+  }
+  if (takenKeys) {
+    for (const [key, [group]] of indexNamedGroups(liveGroups, protectedIds, reservedKeys, positions)) {
+      existingGroupIdByName.set(key, group.id);
+      existingGroupDetailsByName.set(key, group);
     }
   }
 
@@ -4517,7 +4642,7 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
   for (const tab of tabsForAI) {
     const target = targetByTabId.get(tab.id);
     if (!target) continue;
-    const current = tab.groupId >= 0 ? (groupTitleById.get(tab.groupId) || '').toLowerCase() : '';
+    const current = titleKey(groupTitleById.get(tab.groupId));
     if (target === current) continue;
     if (!movesByTarget.has(target)) movesByTarget.set(target, []);
     movesByTarget.get(target).push(tab.id);
@@ -4543,12 +4668,11 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
   }
   movesByTarget.set('misc', miscTabIds);
 
-  const usedColors = new Set(
-    (await chrome.tabGroups.query({ windowId })).map(group => group.color).filter(Boolean)
-  );
+  const usedColors = new Set(liveGroups.map(group => group.color).filter(Boolean));
   let movedCount = 0;
   let createdGroupCount = 0;
   for (const [target, tabIds] of movesByTarget) {
+    if (reservedKeys.has(target)) continue;
     // Re-check: a tab can still navigate or change group while the earlier moves run.
     const liveTabIds = await filterUnchangedTabIds(tabIds, snapshots, windowId, excludedDomains);
     if (liveTabIds.length === 0) continue;
@@ -4557,7 +4681,9 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
     // destination against live groups so cyclic moves do not use a stale cached ID.
     if (existingGroupId !== undefined) {
       const liveGroups = await chrome.tabGroups.query({ windowId });
-      const liveGroup = liveGroups.find(group => (group.title || '').trim().toLowerCase() === target);
+      const liveGroup = liveGroups
+        .filter(group => !protectedIds.has(group.id) && titleKey(group.title) === target)
+        .sort((a, b) => compareGroupPositions(a, b, positions))[0];
       if (liveGroup) {
         existingGroupId = liveGroup.id;
         existingGroupIdByName.set(target, liveGroup.id);
@@ -4565,14 +4691,11 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
         if (target === 'misc' && liveTabIds.length < 2) continue;
         // Recreate an emptied original group with its original title and colour.
         const details = existingGroupDetailsByName.get(target) || {title: target, color: 'grey'};
-        const recreatedId = await chrome.tabs.group({
-          tabIds: liveTabIds,
-          createProperties: {windowId}
-        });
-        await chrome.tabGroups.update(recreatedId, {
+        const recreatedId = await createGroup(liveTabIds, {
           title: details.title,
           color: details.color || 'grey'
         });
+        if (recreatedId === null) continue;
         existingGroupIdByName.set(target, recreatedId);
         movedCount += liveTabIds.length;
         continue;
@@ -4587,10 +4710,6 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
     if (existingGroupId !== undefined) {
       await chrome.tabs.group({ groupId: existingGroupId, tabIds: liveTabIds });
     } else {
-      const groupId = await chrome.tabs.group({
-        tabIds: liveTabIds,
-        createProperties: { windowId }
-      });
       let color = 'grey';
       if (target !== 'misc') {
         const available = CHROME_TAB_GROUP_COLORS.filter(c => !usedColors.has(c));
@@ -4598,17 +4717,95 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
           ? available[0]
           : CHROME_TAB_GROUP_COLORS[createdGroupCount % CHROME_TAB_GROUP_COLORS.length];
       }
-      usedColors.add(color);
-      await chrome.tabGroups.update(groupId, {
-        title: target === 'misc' ? 'Misc' : targetNames.get(target).substring(0, 20),
+      const groupId = await createGroup(liveTabIds, {
+        title: target === 'misc' ? 'Misc' : allocateGroupTitle(targetNames.get(target), takenKeys),
         color
       });
+      if (groupId === null) continue;
+      usedColors.add(color);
       existingGroupIdByName.set(target, groupId);
       createdGroupCount++;
     }
     movedCount += liveTabIds.length;
   }
   return { movedCount, createdGroupCount };
+}
+
+function routeReservedAssignments(groups, reservedKeys) {
+  const allowed = [];
+  const leftover = [];
+  for (const group of groups) {
+    if (reservedKeys.has(groupTitleKey(group.groupName))) leftover.push(...group.tabIndices);
+    else allowed.push(group);
+  }
+  if (leftover.length) allowed.push({ groupName: 'Misc', tabIndices: leftover });
+  return allowed;
+}
+
+async function applyOrganizedGroups({
+  groups, tabsForAI, snapshots, windowId, minTabs, excludedDomains, takenKeys,
+  liveGroups, protectedIds, reservedKeys, groupTitleById, mergeIntoExisting, preservedIds, positions, createGroup
+}) {
+  const retainedTabIds = takenKeys ? matchedGroupTabs(groups, tabsForAI, groupTitleById) : null;
+  await ungroupReorganizableTabs(snapshots, windowId, excludedDomains, retainedTabIds);
+  const remainingGroups = await chrome.tabGroups.query({ windowId });
+  const destinationGroups = takenKeys
+    ? remainingGroups
+    : remainingGroups.filter(group => mergeIntoExisting && preservedIds.has(group.id));
+  const destinations = indexNamedGroups(destinationGroups, protectedIds, reservedKeys, positions);
+  const usedColors = new Set(liveGroups.map(group => group.color).filter(Boolean));
+  const usedTabIds = new Set();
+  const miscTabIds = [];
+  let groupedCount = 0;
+  let groupCount = 0;
+
+  for (const group of groups) {
+    const key = groupTitleKey(group.groupName);
+    const tabIds = [...new Set(group.tabIndices.map(index => tabsForAI[index - 1]?.id))]
+      .filter(id => id !== undefined && !usedTabIds.has(id));
+    const liveTabIds = await filterUnchangedTabIds(tabIds, snapshots, windowId, excludedDomains);
+    if (liveTabIds.length === 0) continue;
+    liveTabIds.forEach(id => usedTabIds.add(id));
+    const destination = destinations.get(key)?.[0];
+    if (key === 'misc' || (!destination && liveTabIds.length <= Math.max(1, minTabs))) {
+      miscTabIds.push(...liveTabIds);
+    } else if (destination) {
+      groupedCount += await addTabsToExistingGroup(destination.id, liveTabIds, snapshots);
+    } else {
+      const title = allocateGroupTitle(group.groupName.trim(), takenKeys);
+      const color = CHROME_TAB_GROUP_COLORS.find(value => !usedColors.has(value))
+        || CHROME_TAB_GROUP_COLORS[groupCount % CHROME_TAB_GROUP_COLORS.length];
+      if (await createGroup(liveTabIds, { title, color }) === null) continue;
+      usedColors.add(color);
+      groupedCount += liveTabIds.length;
+      groupCount++;
+    }
+  }
+
+  for (const tab of tabsForAI) {
+    if (tab.groupId < 0 && !usedTabIds.has(tab.id)) miscTabIds.push(tab.id);
+  }
+  const misc = reservedKeys.has('misc') ? [] : await filterUnchangedTabIds(miscTabIds, snapshots, windowId, excludedDomains);
+  const existingMisc = destinations.get('misc')?.[0];
+  if (existingMisc) {
+    groupedCount += await addTabsToExistingGroup(existingMisc.id, misc, snapshots);
+  } else if (misc.length >= 2 && await createGroup(misc, { title: 'Misc', color: 'grey' }) !== null) {
+    groupedCount += misc.length;
+    groupCount++;
+  }
+  return { groupedCount, groupCount };
+}
+
+async function addTabsToExistingGroup(groupId, tabIds, snapshots) {
+  const newTabIds = tabIds.filter(id => snapshots.get(id).groupId !== groupId);
+  if (newTabIds.length > 0) await chrome.tabs.group({ groupId, tabIds: newTabIds });
+  return newTabIds.length;
+}
+
+async function createTabGroup(windowId, tabIds, details) {
+  const id = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+  await chrome.tabGroups.update(id, details);
+  return id;
 }
 
 async function organizeTabs(
@@ -4629,10 +4826,12 @@ async function organizeTabs(
       'localBaseUrl', 'localModel', 'customOpenaiBaseUrl', 'customOpenaiKey', 'customOpenaiModel',
       'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
       'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow',
-      'excludedDomains', 'refineExistingGroups', 'uniqueGroupNames'
+      'excludedDomains', 'refineExistingGroups', 'uniqueGroupNames', 'limitGroupsPerWindow', 'maxGroupsPerWindow'
     ]);
     const excludedDomains = parseExcludedDomains(settings.excludedDomains);
     const refine = settings.refineExistingGroups === true;
+    const mergeDuplicateNames = settings.uniqueGroupNames !== false;
+    const maxGroups = getWindowGroupLimit(settings);
 
     // Use custom instructions from the action, or fall back to the saved settings.
     let instructions = customInstructions || settings.customInstructionsOptions || '';
@@ -4646,40 +4845,10 @@ async function organizeTabs(
       instructions = [instructions, managedGroupInstruction].filter(Boolean).join('\n');
     }
 
-    // Validate that at least one provider in the chain is configured.
-    // Local providers need no provider key: Chrome AI needs nothing; loopback needs a model name.
-    // This preflight runs before any tab-group mutation.
-    const providerChain = await buildProviderChain(settings);
-    let providerStatuses = await computeProviderStatuses(providerChain, settings);
-    const primary = providerChain[0] || 'openai';
-
-    // Host access is granted by the click handlers before this runs (see
-    // grantHostAccessForUserGesture), so this path only checks. Prompting here
-    // would come after synchronization and dedupe, too late to own the gesture.
-
-    const usableChain = providerStatuses
-      .filter((entry) => entry.status === 'ready')
-      .map((entry) => entry.provider);
-    if (usableChain.length === 0) {
-      const currentPrimaryStatus = providerStatuses.find((entry) => entry.provider === primary)?.status || 'no-key';
-      const fix = providerStatusFixMessage(primary, currentPrimaryStatus);
-      return {
-        success: false,
-        error: `${providerLabel(primary)} is not configured. ${fix}`,
-      };
-    }
-
     // Resolve URLs for suspended tabs (e.g. Arc) before filtering
-    const validTabs = await getOrganizableTabs(windowId);
-
-    if (validTabs.length === 0) {
-      return {
-        success: false,
-        error: 'No valid tabs to organize (only http/https pages can be grouped)'
-      };
-    }
-
-    const tabs = validTabs;
+    const currentWindowId = await resolveTargetWindowId(windowId);
+    const windowTabs = await getAllTabsWithUrls(currentWindowId);
+    const tabs = windowTabs.filter(isOrganizableHttpTab);
     // Tabs on excluded domains are never ungrouped, sent to AI, or regrouped. Every check reads
     // live tab state, so a tab that navigates mid-run is caught too.
     const additionalPreservedTabIdSet = new Set(
@@ -4690,10 +4859,10 @@ async function organizeTabs(
     // Never change extension-managed groups, regardless of the preservation setting.
     // Preserve a full group when it contains a tab whose GitHub details could not be read.
     // Pinned tabs (Chrome-native) are excluded separately via tab.pinned.
-    const allGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(settings, tabs[0].windowId);
+    const allGroups = await chrome.tabGroups.query({ windowId: currentWindowId });
+    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(settings, currentWindowId);
     const additionalPreservedGroupIds = new Set(
-      tabs
+      windowTabs
         .filter(tab => additionalPreservedTabIdSet.has(tab.id) && Number.isInteger(tab.groupId) && tab.groupId >= 0)
         .map(tab => tab.groupId)
     );
@@ -4702,83 +4871,63 @@ async function organizeTabs(
         alwaysPreservedGroupNames.add(group.title.trim().toUpperCase());
       }
     }
+    const reservedKeys = new Set([...alwaysPreservedGroupNames].map(groupTitleKey));
     const alwaysPreservedGroupIds = new Set([
       ...allGroups
-        .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
+        .filter(group => reservedKeys.has(groupTitleKey(group.title))
+          || alwaysPreservedGroupNames.has((group.title || '').trim().toUpperCase()))
         .map(g => g.id),
       ...additionalPreservedGroupIds,
     ]);
-    const renameDuplicateGroups = () => settings.uniqueGroupNames === false ? 0 : ensureUniqueGroupNames(
-      tabs[0].windowId, new Set(allGroups.map(group => group.id)), alwaysPreservedGroupIds, alwaysPreservedGroupNames
-    );
-
-    // Preserved groups = always-preserved + (when preserveGroups) groups with more than minTabs tabs
-    // Refine mode keeps every group in place and reviews its tabs individually instead.
-    const preservedGroupIds = new Set(alwaysPreservedGroupIds);
-    if (preserveGroups && !refine) {
-      for (const group of allGroups) {
-        if (alwaysPreservedGroupIds.has(group.id)) continue;
-        const groupTabs = await chrome.tabs.query({ groupId: group.id });
-        if (groupTabs.length > minTabs) {
-          preservedGroupIds.add(group.id);
-        }
-      }
-    }
-
-    // Shared eligibility rule for the numbered list and for existing-group samples.
+    const userGroups = allGroups.filter(group => !alwaysPreservedGroupIds.has(group.id));
+    const positions = groupPositions(windowTabs);
+    const groupFamilies = mergeDuplicateNames ? [
+      ...indexNamedGroups(userGroups, alwaysPreservedGroupIds, reservedKeys, positions).values(),
+      ...userGroups.filter(group => !groupTitleKey(group.title)).map(group => [group]),
+    ] : userGroups.map(group => [group]);
     const aiEligibility = {
       excludedDomains,
       additionalPreservedTabIdSet,
       alwaysPreservedGroupIds,
     };
+    const mergeMatchingGroups = snapshots => mergeDuplicateNames
+      ? mergeDuplicateGroups(currentWindowId, reservedKeys, aiEligibility, snapshots)
+      : 0;
+    const preserved = preserveGroups && !refine
+      ? buildPreservedGroupContext(groupFamilies, windowTabs, minTabs, mergeIntoExisting, aiEligibility)
+      : { preservedIds: alwaysPreservedGroupIds, groupsForPrompt: [] };
 
-    // Get existing groups information (for merge — only preserved groups with > minTabs, excluding always-preserved)
-    let existingGroupsInfo = [];
-    if (mergeIntoExisting && !refine) {
-      for (const group of allGroups) {
-        if (alwaysPreservedGroupIds.has(group.id)) continue;
-        if (!preservedGroupIds.has(group.id)) continue;
-        const groupTabs = await chrome.tabs.query({ groupId: group.id });
-        if (groupTabs.length > minTabs) {
-          existingGroupsInfo.push({
-            id: group.id,
-            title: group.title,
-            color: group.color,
-            // Samples use the same rule as the numbered list, so no ineligible tab's title leaks.
-            tabs: groupTabs.filter((tab) => isTabEligibleForAi(tab, aiEligibility))
-          });
-        }
-      }
-    }
-
-    const userGroups = allGroups.filter(group => !alwaysPreservedGroupIds.has(group.id));
     const groupTitleById = new Map(userGroups.map(group => [group.id, (group.title || '').trim()]));
     const groupDetailsById = new Map(userGroups.map(group => [group.id, {
       title: (group.title || '').trim(),
       color: group.color,
     }]));
 
-    // Never send pinned tabs or tabs in extension-managed groups to AI.
-    // When preserving or merging, skip tabs already in a preserved group (prompt lists those separately).
-    // When not preserving, every other organizable tab is eligible.
-    const tabsForAI = tabs.filter((tab) => {
-      if (!isTabEligibleForAi(tab, aiEligibility)) return false;
-      if (refine) {
-        // Unnamed groups cannot be referenced by name, so their tabs stay put.
-        return !(tab.groupId >= 0 && !groupTitleById.get(tab.groupId));
-      }
-      if (preserveGroups || mergeIntoExisting) {
-        if (tab.groupId && tab.groupId !== -1 && preservedGroupIds.has(tab.groupId)) {
-          return false;
-        }
-      }
-      return true;
-    });
+    const tabsForAI = tabs.filter(tab =>
+      isTabEligibleForAi(tab, aiEligibility)
+      && (refine ? tab.groupId < 0 || groupTitleById.get(tab.groupId) : !preserved.preservedIds.has(tab.groupId))
+    );
     const tabsForAISnapshots = new Map(tabsForAI.map(tab => [tab.id, tab]));
 
     if (tabsForAI.length === 0) {
-      const renamedGroupCount = await renameDuplicateGroups();
-      if (renamedGroupCount > 0) return { success: true, groupedCount: 0, groupCount: 0, renamedGroupCount };
+      const mergedGroupCount = await mergeMatchingGroups();
+      if (mergedGroupCount > 0) return { success: true, groupedCount: 0, groupCount: 0, mergedGroupCount };
+    }
+
+    // Host access is checked here. User-gesture handlers own permission requests.
+    const providerChain = await buildProviderChain(settings);
+    const providerStatuses = await computeProviderStatuses(providerChain, settings);
+    const primary = providerChain[0] || 'openai';
+    const usableChain = providerStatuses.filter(entry => entry.status === 'ready').map(entry => entry.provider);
+    if (usableChain.length === 0) {
+      const status = providerStatuses.find(entry => entry.provider === primary)?.status || 'no-key';
+      return { success: false, error: `${providerLabel(primary)} is not configured. ${providerStatusFixMessage(primary, status)}` };
+    }
+
+    if (tabsForAI.length === 0) {
+      if (tabs.length === 0) {
+        return { success: false, error: 'No valid tabs to organize (only http/https pages can be grouped)' };
+      }
       const hint = (preserveGroups || mergeIntoExisting) && !refine
         ? ' All organizable tabs are already in preserved groups — disable "Preserve existing groups" or ungroup some tabs first.'
         : '';
@@ -4788,21 +4937,16 @@ async function organizeTabs(
       };
     }
 
-
-    // Call AI API (with fallback chain) — try primary first, then configured fallbacks
     let groups = null;
     let providerUsed = null;
     const failures = [];
-    const existingGroupsForAI = refine
-      ? userGroups.filter(group => groupTitleById.get(group.id)).map(group => ({ id: group.id, title: groupTitleById.get(group.id) }))
-      : (mergeIntoExisting ? existingGroupsInfo : null);
-    const promptTabs = refine
-      ? tabsForAI.map(tab => ({ ...tab, currentGroup: tab.groupId >= 0 ? (groupTitleById.get(tab.groupId) || '') : '' }))
-      : tabsForAI;
+    const { tabsForPrompt, groupsForPrompt } = refine
+      ? buildRefineContext(groupFamilies, tabsForAI)
+      : { tabsForPrompt: tabsForAI, groupsForPrompt: preserved.groupsForPrompt };
 
     for (const provider of usableChain) {
       try {
-        const result = await callProvider(provider, settings, promptTabs, instructions, existingGroupsForAI, minTabs);
+        const result = await callProvider(provider, settings, tabsForPrompt, instructions, groupsForPrompt, minTabs);
         if (!Array.isArray(result) || (result.length === 0 && result[VALID_EMPTY_GROUPS] !== true)) {
           throw new AiProviderError({ provider, message: `Invalid response from ${providerLabel(provider)}: expected array of groups` });
         }
@@ -4844,248 +4988,54 @@ async function organizeTabs(
       }
       : null;
 
-    // Reserved names are a code boundary, not only a prompt instruction.
-    const groupsWithReservedNames = groups.filter(group =>
-      alwaysPreservedGroupNames.has((group.groupName || '').trim().toUpperCase())
-    );
-    if (groupsWithReservedNames.length > 0) {
-      let miscGroup = groups.find(group => (group.groupName || '').trim().toLowerCase() === 'misc');
-      if (!miscGroup) {
-        miscGroup = { groupName: 'Misc', tabIndices: [] };
-        groups.push(miscGroup);
-      }
-      for (const group of groupsWithReservedNames) {
-        miscGroup.tabIndices.push(...(group.tabIndices || []));
-      }
-      groups = groups.filter(group => !groupsWithReservedNames.includes(group));
-    }
+    const mergedBeforeAssignments = maxGroups === null ? 0 : await mergeMatchingGroups(tabsForAISnapshots);
+    const liveGroups = await chrome.tabGroups.query({ windowId: currentWindowId });
+    groups = routeReservedAssignments(groups, reservedKeys);
+    if (mergeDuplicateNames) groups = mergeGroupBatches([groups], normalizeGroupTitle);
+    const takenKeys = mergeDuplicateNames ? new Set([
+      ...reservedKeys, 'misc',
+      ...liveGroups.map(group => groupTitleKey(group.title)),
+      ...groups.map(group => groupTitleKey(group.groupName)),
+    ]) : null;
 
-    if (refine) {
-      const refineResult = await applyRefinedGroups({
-        groups,
-        tabsForAI,
-        snapshots: tabsForAISnapshots,
-        windowId: validTabs[0].windowId,
-        groupTitleById,
-        groupDetailsById,
-        minTabs,
-        excludedDomains,
-      });
-      const renamedGroupCount = await renameDuplicateGroups();
-      const sortSettings = await chrome.storage.local.get(['sortTabsWithinGroupsByTitle']);
-      if (sortSettings.sortTabsWithinGroupsByTitle === true) {
-        // Recompute from live tabs: a tab may have navigated to an excluded domain mid-run.
-        const liveExcludedTabIds = await collectExcludedTabIds(validTabs[0].windowId, excludedDomains);
-        await sortTabsWithinGroupsByTitle(validTabs[0].windowId, alwaysPreservedGroupNames, liveExcludedTabIds);
-      }
-      return {
-        success: true,
-        groupedCount: refineResult.movedCount,
-        groupCount: refineResult.createdGroupCount,
-        movedCount: refineResult.movedCount,
-        renamedGroupCount,
-        refined: true,
-        providerUsed,
-        providerUsedLabel: providerUsed ? providerLabel(providerUsed) : null,
-        fallbackInfo
-      };
-    }
-
-    // Enforce minimum group size: merge any group with ≤ minTabs tabs into Misc
-    if (minTabs > 0) {
-      let miscGroup = groups.find(g => (g.groupName || '').trim().toLowerCase() === 'misc');
-      if (!miscGroup) {
-        miscGroup = { groupName: 'Misc', tabIndices: [] };
-        groups.push(miscGroup);
-      }
-      for (const group of groups) {
-        if (group === miscGroup) continue;
-        const indices = group.tabIndices || [];
-        if (indices.length <= minTabs) {
-          miscGroup.tabIndices.push(...indices);
-          group.tabIndices = [];
-        }
-      }
-      groups = groups.filter(g => (g.tabIndices || []).length > 0);
-    }
-
-
-    // Skip tabs that moved or changed while an AI provider processed the request.
-    const currentWindowId = validTabs[0].windowId;
-    await ungroupReorganizableTabs(tabsForAISnapshots, currentWindowId, excludedDomains);
-    const currentWindowTabIds = new Set(await filterUnchangedTabIds(
-      tabsForAI.map(tab => tab.id),
-      tabsForAISnapshots,
-      currentWindowId,
-      excludedDomains
-    ));
-
-    // Create or update tab groups
-    let groupedCount = 0;
-    let groupCount = 0;
-    const usedTabIndices = new Set();
-    const miscTabIds = []; // Collect tabs for Misc group
-    
-    // Create a map of existing group names to group IDs for merging
-    const existingGroupMap = new Map();
-    const usedColors = new Set();
-    if (mergeIntoExisting) {
-      existingGroupsInfo.forEach(group => {
-        if (group.title?.trim()) existingGroupMap.set(group.title.trim().toLowerCase(), group.id);
-        if (group.color) usedColors.add(group.color);
-      });
-    }
-    // Also consider existing groups when preserving (we might create new ones alongside)
-    const allExistingGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    allExistingGroups.forEach(g => { if (g.color) usedColors.add(g.color); });
-
-    const allColors = CHROME_TAB_GROUP_COLORS;
-
-    // First pass: process groups with 2+ tabs
-    for (const group of groups) {
-      if (!group.groupName || !Array.isArray(group.tabIndices) || group.tabIndices.length === 0) {
-        continue;
-      }
-
-      // Convert 1-based indices to tab IDs (only current-window tabs)
-      const tabIds = [...new Set(group.tabIndices
-        .map(idx => {
-          const tabIndex = idx - 1; // Convert to 0-based
-          if (tabIndex >= 0 && tabIndex < tabsForAI.length) {
-            return tabsForAI[tabIndex].id;
-          }
+    let groupLimitReached = null;
+    const createGroup = async (tabIds, details) => {
+      if (maxGroups !== null) {
+        const groupsInWindow = await chrome.tabGroups.query({ windowId: currentWindowId });
+        if (groupsInWindow.length >= maxGroups) {
+          groupLimitReached = maxGroups;
           return null;
-        })
-        .filter(id => id !== null && !usedTabIndices.has(id) && currentWindowTabIds.has(id)))];
-
-      const liveTabIds = await filterUnchangedTabIds(tabIds, tabsForAISnapshots, currentWindowId, excludedDomains);
-      if (liveTabIds.length === 0) {
-        continue;
-      }
-
-      const groupNameLower = group.groupName.trim().toLowerCase();
-      // Collect all Misc candidates before deciding whether to create the group.
-      if (groupNameLower === 'misc' || liveTabIds.length <= Math.max(1, minTabs)) {
-        miscTabIds.push(...liveTabIds);
-        liveTabIds.forEach(id => usedTabIndices.add(id));
-        continue;
-      }
-
-      // Mark tabs as used
-      liveTabIds.forEach((id) => usedTabIndices.add(id));
-
-      // Check if we should merge into an existing group
-      const existingGroupId = existingGroupMap.get(groupNameLower);
-      
-      let groupId;
-      if (existingGroupId) {
-        // Merge only newly assigned tabs — do not re-group existing members (avoids reordering)
-        const existingTabs = await chrome.tabs.query({ groupId: existingGroupId });
-        const existingTabIdSet = new Set(
-          existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
-        );
-        const newTabIds = await filterUnchangedTabIds(
-          liveTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id)),
-          tabsForAISnapshots,
-          currentWindowId,
-          excludedDomains
-        );
-        if (newTabIds.length > 0) {
-          await chrome.tabs.group({ groupId: existingGroupId, tabIds: newTabIds });
-          groupedCount += newTabIds.length;
         }
-        groupId = existingGroupId;
-      } else {
-        // Create new group (only current-window tabs)
-        groupId = await chrome.tabs.group({
-          tabIds: liveTabIds,
-          createProperties: { windowId: currentWindowId }
-        });
-        
-        // Pick a color not yet used; if all used, cycle through
-        const available = allColors.filter(c => !usedColors.has(c));
-        const color = available.length > 0 ? available[0] : allColors[groupCount % allColors.length];
-        usedColors.add(color);
-        
-        await chrome.tabGroups.update(groupId, {
-          title: group.groupName.substring(0, 20),
-          color: color
-        });
-        
-        groupedCount += liveTabIds.length;
-        groupCount++;
+        const unchanged = await filterUnchangedTabIds(tabIds, tabsForAISnapshots, currentWindowId, excludedDomains);
+        if (unchanged.length !== tabIds.length) return null;
       }
-    }
+      return createTabGroup(currentWindowId, tabIds, details);
+    };
+    const assignments = {
+      groups, tabsForAI, snapshots: tabsForAISnapshots, windowId: currentWindowId, minTabs,
+      excludedDomains, takenKeys, liveGroups, protectedIds: alwaysPreservedGroupIds, reservedKeys, positions, createGroup
+    };
+    const result = refine
+      ? await applyRefinedGroups({ ...assignments, groupTitleById, groupDetailsById })
+      : await applyOrganizedGroups({ ...assignments, groupTitleById, mergeIntoExisting, preservedIds: preserved.preservedIds });
 
-    // Second pass: collect any remaining ungrouped tabs (shouldn't happen, but safety check)
-    const usedTabIdsSet = new Set(usedTabIndices);
-    const remainingTabs = tabsForAI.filter(tab => 
-      !usedTabIdsSet.has(tab.id) && 
-      (!tab.groupId || tab.groupId === -1)
-    );
-    
-    if (remainingTabs.length > 0) {
-      // Add remaining tabs to Misc (only current window)
-      miscTabIds.push(...remainingTabs.map(t => t.id).filter(id => currentWindowTabIds.has(id)));
-    }
-
-    // An existing Misc group can accept one tab. A new one requires at least two.
-    const liveMiscTabIds = await filterUnchangedTabIds(
-      miscTabIds,
-      tabsForAISnapshots,
-      currentWindowId,
-      excludedDomains
-    );
-    if (liveMiscTabIds.length > 0) {
-      const existingMiscGroupId = existingGroupMap.get('misc');
-      
-      if (existingMiscGroupId) {
-        // Merge only new tabs into existing Misc group (do not reorder existing members)
-        const existingTabs = await chrome.tabs.query({ groupId: existingMiscGroupId });
-        const existingTabIdSet = new Set(
-          existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
-        );
-        const newMiscTabIds = await filterUnchangedTabIds(
-          liveMiscTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id)),
-          tabsForAISnapshots,
-          currentWindowId,
-          excludedDomains
-        );
-        if (newMiscTabIds.length > 0) {
-          await chrome.tabs.group({ groupId: existingMiscGroupId, tabIds: newMiscTabIds });
-          groupedCount += newMiscTabIds.length;
-        }
-      } else {
-        // Create new Misc group (only current-window tabs)
-        const miscIdsInWindow = liveMiscTabIds.filter((id) => currentWindowTabIds.has(id));
-        if (miscIdsInWindow.length >= 2) {
-          const newMiscGroupId = await chrome.tabs.group({
-            tabIds: miscIdsInWindow,
-            createProperties: { windowId: currentWindowId }
-          });
-          await chrome.tabGroups.update(newMiscGroupId, {
-            title: 'Misc',
-            color: 'grey'
-          });
-          groupedCount += miscIdsInWindow.length;
-          groupCount++;
-        }
-      }
-    }
-
-    const renamedGroupCount = await renameDuplicateGroups();
+    const mergedGroupCount = maxGroups === null ? await mergeMatchingGroups() : mergedBeforeAssignments;
     const sortSettings = await chrome.storage.local.get(['sortTabsWithinGroupsByTitle']);
     if (sortSettings.sortTabsWithinGroupsByTitle === true) {
-      // Recompute from live tabs: a tab may have navigated to an excluded domain mid-run.
       const liveExcludedTabIds = await collectExcludedTabIds(currentWindowId, excludedDomains);
       await sortTabsWithinGroupsByTitle(currentWindowId, alwaysPreservedGroupNames, liveExcludedTabIds);
     }
 
     return {
       success: true,
-      groupedCount,
-      groupCount,
-      renamedGroupCount,
+      ...(refine ? {
+        groupedCount: result.movedCount,
+        groupCount: result.createdGroupCount,
+        movedCount: result.movedCount,
+        refined: true,
+      } : result),
+      mergedGroupCount,
+      groupLimitReached,
       providerUsed,
       providerUsedLabel: providerUsed ? providerLabel(providerUsed) : null,
       fallbackInfo

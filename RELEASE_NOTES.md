@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.3.7
+
+- Reuse groups with matching names and merge existing duplicates within each window.
+- Add an optional per-window group limit for AI grouping. The starting limit is 16 groups.
+
 ## 1.3.6
 
 - Document how to open Settings from the Firefox toolbar and log an error if Settings fails to open.

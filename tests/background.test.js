@@ -2646,12 +2646,10 @@ function setupOrganizeWorld({ settings, tabs, groups }) {
     sortTabsWithinGroupsByTitle: false,
     ...settings,
   });
-  chrome.tabs.query = async (query) => {
-    if (Number.isInteger(query.groupId)) {
-      return tabs.filter(tab => tab.groupId === query.groupId).map(tab => ({ ...tab }));
-    }
-    return tabs.map(tab => ({ ...tab }));
-  };
+  chrome.tabs.query = async ({ windowId, groupId } = {}) => tabs
+    .filter(tab => windowId === undefined || tab.windowId === windowId)
+    .filter(tab => groupId === undefined || tab.groupId === groupId)
+    .map(tab => ({ ...tab }));
   chrome.tabs.get = async (id) => {
     const tab = tabs.find(candidate => candidate.id === id);
     if (!tab) throw new Error(`No tab with id: ${id}`);
@@ -2672,8 +2670,10 @@ function setupOrganizeWorld({ settings, tabs, groups }) {
     calls.ungroup.push([...ids]);
     for (const id of ids) tabs.find(tab => tab.id === id).groupId = -1;
   };
-  chrome.tabGroups.query = async () => groups
-    .filter(group => tabs.some(tab => tab.groupId === group.id))
+  chrome.tabGroups.query = async ({ windowId } = {}) => groups
+    .filter(group => tabs.some(tab =>
+      tab.groupId === group.id && (windowId === undefined || tab.windowId === windowId)
+    ))
     .map(group => ({ ...group }));
   chrome.tabGroups.update = async (id, updates) => {
     calls.update.push({ id, ...updates });
@@ -2892,29 +2892,29 @@ for (const refine of [false, true]) {
   });
 }
 
-test('group names are unique by default and a saved opt-out keeps duplicates', async () => {
+test('grouping reuses a matching preserved group by default and honors a saved opt-out', async () => {
   for (const enabled of [undefined, false]) {
     const world = setupOrganizeWorld({
       settings: enabled === undefined ? {} : { uniqueGroupNames: enabled },
-      tabs: [10, 10, 20, 20, -1, -1].map((groupId, index) =>
+      tabs: [10, 10, 20, 20, -1].map((groupId, index) =>
         makeTab(index + 1, groupId, `Tab ${index}`, `https://example.com/${index}`)
       ),
       groups: [
-        { id: 10, title: 'Work', color: 'blue' },
-        { id: 20, title: 'Work (2)', color: 'green' },
+        { id: 10, title: 'Work Docs', color: 'blue' },
+        { id: 20, title: 'Work Docs (2)', color: 'green' },
       ],
     });
-    world.respondWith([{ groupName: 'work', tabIndices: [1, 2] }]);
+    world.respondWith([{ groupName: ' work  docs ', tabIndices: [1] }]);
 
     const result = await world.context.organizeTabs(true, false, '', 1, 1);
 
     assert.equal(result.success, true);
-    assert.equal(result.renamedGroupCount, enabled === false ? 0 : 1);
-    assert.deepEqual(world.groups.map(group => group.title), ['Work', 'Work (2)', enabled === false ? 'work' : 'work (3)']);
+    assert.equal(world.tabs[4].groupId, enabled === false ? -1 : 10);
+    assert.deepEqual(world.groups.map(group => group.title), ['Work Docs', 'Work Docs (2)']);
   }
 });
 
-test('refine resolves existing and shortened name collisions while keeping groups separate', async () => {
+test('refine merges existing duplicate groups and gives distinct topics distinct shortened titles', async () => {
   const world = setupOrganizeWorld({
     settings: { refineExistingGroups: true },
     tabs: [10, 20, -1, -1, -1, -1].map((groupId, index) =>
@@ -2934,10 +2934,225 @@ test('refine resolves existing and shortened name collisions while keeping group
   const result = await world.context.organizeTabs(false, false, '', 1, 1);
 
   assert.equal(result.success, true);
-  assert.equal(result.renamedGroupCount, 2);
-  assert.deepEqual(world.groups.map(group => group.title), ['Work', 'work (2)', 'Shared title prefix ', 'Shared title pre (2)']);
-  assert.equal(world.tabs[0].groupId, 10);
-  assert.equal(world.tabs[1].groupId, 20);
+  assert.equal(result.mergedGroupCount, 1);
+  assert.deepEqual((await world.chrome.tabGroups.query({ windowId: 1 })).map(group => group.title),
+    ['Work', 'Shared title prefix', 'Shared title pre (2)']);
+  assert.deepEqual(world.tabs.slice(0, 2).map(tab => tab.groupId), [10, 10]);
+});
+
+test('canonical model assignments are combined before checking the minimum size', async () => {
+  const world = setupOrganizeWorld({
+    tabs: [1, 2].map(id => makeTab(id, -1, 'Architecture', `https://example.com/${id}`)),
+    groups: [],
+  });
+  world.respondWith([
+    { groupName: ' Café  Notes ', tabIndices: [1, 1] },
+    { groupName: 'CAFE\u0301 NOTES', tabIndices: [2] },
+  ]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.deepEqual(world.groups.map(group => group.title), ['Café Notes']);
+  assert.equal(world.tabs[0].groupId, world.tabs[1].groupId);
+});
+
+test('existing duplicate groups merge without an AI call when all tabs are preserved', async () => {
+  const world = setupOrganizeWorld({
+    tabs: [70, 20].map((groupId, index) =>
+      makeTab(index + 1, groupId, 'Same URL', 'https://example.com/docs')
+    ),
+    groups: [
+      { id: 20, title: 'PROJECT  DOCS', color: 'green' },
+      { id: 70, title: 'Project Docs', color: 'blue', collapsed: true },
+    ],
+  });
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.mergedGroupCount, 1);
+  assert.equal(result.groupCount, 0);
+  assert.deepEqual(world.tabs.map(tab => [tab.id, tab.groupId]), [[1, 70], [2, 70]]);
+  assert.deepEqual(await world.chrome.tabGroups.query({ windowId: 1 }), [
+    { id: 70, title: 'Project Docs', color: 'blue', collapsed: true },
+  ]);
+});
+
+test('the model sees one matching existing group with samples from both copies', async () => {
+  const world = setupOrganizeWorld({
+    tabs: [
+      makeTab(1, 10, 'Project brief', 'https://example.com/brief'),
+      makeTab(2, 20, 'Project schedule', 'https://example.com/schedule'),
+      makeTab(3, -1, 'Project budget', 'https://example.com/budget'),
+    ],
+    groups: [
+      { id: 10, title: 'Project Docs', color: 'blue' },
+      { id: 20, title: 'project docs', color: 'green' },
+    ],
+  });
+  world.respondWith([{ groupName: 'Project Docs', tabIndices: [1] }]);
+
+  const result = await world.context.organizeTabs(true, true, '', 1, 1);
+
+  assert.equal(result.groupCount, 0);
+  assert.equal(result.mergedGroupCount, 1);
+  assert.match(world.prompt, /Existing Group "Project Docs": 2 tab\(s\) — "Project brief", "Project schedule"/);
+  assert.equal(world.prompt.match(/^Existing Group /gm).length, 1);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 10, 10]);
+});
+
+for (const refineExistingGroups of [false, true]) {
+  const mode = refineExistingGroups ? 'refine' : 'organize';
+
+  test(`${mode} reuses a group at the cap and leaves overflow tabs open`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { refineExistingGroups, limitGroupsPerWindow: true, maxGroupsPerWindow: 2 },
+      tabs: [10, 10, 20, 20, -1, -1, -1].map((id, index) =>
+        makeTab(index + 1, id, `Tab ${index}`, `https://example.com/${index}`)
+      ),
+      groups: [{ id: 10, title: 'Docs' }, { id: 20, title: 'Misc' }],
+    });
+    world.respondWith([
+      { groupName: 'Docs', tabIndices: refineExistingGroups ? [5] : [1] },
+      { groupName: 'News', tabIndices: refineExistingGroups ? [6, 7] : [2, 3] },
+    ]);
+
+    const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+    assert.equal(result.success, true);
+    assert.equal(result.groupCount, 0);
+    assert.equal(result.groupLimitReached, 2);
+    assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 10, 20, 20, 10, -1, -1]);
+  });
+
+  test(`${mode} can use the slot freed by merging duplicate groups`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { refineExistingGroups, limitGroupsPerWindow: true, maxGroupsPerWindow: 2 },
+      tabs: [10, 20, -1, -1, 40].map((id, index) =>
+        makeTab(index + 1, id, `Tab ${index}`, `https://example.com/${index}`, { windowId: id === 40 ? 2 : 1 })
+      ),
+      groups: [{ id: 10, title: 'Docs' }, { id: 20, title: 'docs' }, { id: 40, title: 'Other window' }],
+    });
+    world.respondWith([
+      { groupName: 'News', tabIndices: refineExistingGroups ? [2, 3, 4] : [1, 2] },
+    ]);
+
+    const result = await world.context.organizeTabs(true, false, '', 1, 1);
+    const current = await world.chrome.tabGroups.query({ windowId: 1 });
+
+    assert.equal(result.success, true);
+    assert.equal(result.mergedGroupCount, 1);
+    assert.equal(result.groupCount, 1);
+    assert.deepEqual(current.map(group => group.title), ['Docs', 'News']);
+    assert.equal(world.tabs[1].groupId, refineExistingGroups ? world.tabs[2].groupId : 10);
+    assert.equal(world.tabs[4].groupId, 40);
+  });
+}
+
+test('enabling the group limit uses 16 unless a valid maximum is saved', async () => {
+  for (const settings of [
+    { limitGroupsPerWindow: true },
+    { limitGroupsPerWindow: true, maxGroupsPerWindow: 0 },
+    { maxGroupsPerWindow: 1 },
+  ]) {
+    const groups = Array.from({ length: 16 }, (_, index) => ({ id: index + 10, title: `Topic ${index}` }));
+    const world = setupOrganizeWorld({
+      settings,
+      groups,
+      tabs: [...groups.map(group => group.id), -1, -1].map((id, index) =>
+        makeTab(index + 1, id, `Tab ${index}`, `https://example.com/${index}`)
+      ),
+    });
+    world.respondWith([{ groupName: 'Misc', tabIndices: [1, 2] }]);
+
+    const result = await world.context.organizeTabs(true, false, '', 0, 1);
+
+    assert.equal(result.success, true);
+    assert.equal(result.groupLimitReached, settings.limitGroupsPerWindow ? 16 : null);
+    assert.equal((await world.chrome.tabGroups.query({ windowId: 1 })).length, settings.limitGroupsPerWindow ? 16 : 17);
+  }
+});
+
+test('a tab that changes while checking capacity stays outside the proposed group', async () => {
+  const world = setupOrganizeWorld({
+    settings: { limitGroupsPerWindow: true, maxGroupsPerWindow: 2, excludedDomains: 'private.example.com' },
+    tabs: [1, 2].map(id => makeTab(id, -1, 'Docs', `https://example.com/${id}`)),
+    groups: [],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+  const respond = world.context.fetch;
+  const getTab = world.chrome.tabs.get;
+  const getGroups = world.chrome.tabGroups.query;
+  let modelReplied = false;
+  let checkedTab = false;
+  world.context.fetch = async (...args) => {
+    modelReplied = true;
+    return respond(...args);
+  };
+  world.chrome.tabs.get = async id => {
+    if (modelReplied && id === 2) checkedTab = true;
+    return getTab(id);
+  };
+  world.chrome.tabGroups.query = async query => {
+    if (checkedTab) world.tabs[1].url = 'https://private.example.com/inbox';
+    return getGroups(query);
+  };
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(world.tabs[1].url, 'https://private.example.com/inbox');
+  assert.equal(result.groupCount, 0);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [-1, -1]);
+});
+
+test('duplicate merging respects excluded tabs, managed groups, and other windows', async () => {
+  const world = setupOrganizeWorld({
+    settings: { excludedDomains: 'private.example.com' },
+    tabs: [
+      makeTab(1, 10, 'Reference', 'https://example.com/reference'),
+      makeTab(2, 20, 'Private', 'https://private.example.com/'),
+      makeTab(3, 20, 'Guide', 'https://example.com/guide'),
+      makeTab(4, 30, 'Other window', 'https://example.com/other', { windowId: 2 }),
+      makeTab(5, 40, 'Review 1', 'https://example.com/1'),
+      makeTab(6, 50, 'Review 2', 'https://example.com/2'),
+      makeTab(7, -1, 'Project budget', 'https://example.com/budget'),
+    ],
+    groups: [
+      { id: 10, title: 'Project Docs', color: 'blue' },
+      { id: 20, title: 'project docs', color: 'green' },
+      { id: 30, title: 'project docs', color: 'red' },
+      { id: 40, title: 'PRs', color: 'blue' },
+      { id: 50, title: ' prs ', color: 'green' },
+    ],
+  });
+  world.respondWith([{ groupName: 'PROJECT DOCS', tabIndices: [1] }]);
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.mergedGroupCount, 0);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 20, 20, 30, 40, 50, 10]);
+  assert.doesNotMatch(world.prompt, /Private|Other window|Review/);
+});
+
+test('a failed model response leaves pre-existing groups where they are', async () => {
+  const world = setupOrganizeWorld({
+    tabs: [10, 20, -1].map((groupId, index) =>
+      makeTab(index + 1, groupId, 'Docs', `https://example.com/${index}`)
+    ),
+    groups: [
+      { id: 10, title: 'Docs', color: 'blue' },
+      { id: 20, title: 'docs', color: 'green' },
+    ],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [] }]);
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1);
+
+  assert.equal(result.success, false);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 20, -1]);
 });
 
 test('excluded domains parse lines, URLs, wildcards, and comments without matching lookalikes', () => {
