@@ -1477,21 +1477,6 @@ async function getOrganizableTabs(windowId) {
   return tabs.filter(isOrganizableHttpTab);
 }
 
-/** Drop tab ids that were closed during a long async operation. */
-async function filterExistingTabIds(tabIds) {
-  const existing = await Promise.all(
-    tabIds.map(async (id) => {
-      try {
-        await chrome.tabs.get(id);
-        return id;
-      } catch (e) {
-        return isStaleTabError(e) ? null : Promise.reject(e);
-      }
-    })
-  );
-  return existing.filter((id) => id !== null);
-}
-
 /** Keep only tabs that still match the snapshot sent to the AI provider. */
 async function filterUnchangedTabIds(tabIds, snapshotsById, windowId, excludedDomains = null) {
   const unchanged = await Promise.all(
@@ -1517,6 +1502,27 @@ async function filterUnchangedTabIds(tabIds, snapshotsById, windowId, excludedDo
     })
   );
   return unchanged.filter((id) => id !== null);
+}
+
+/** Ungroup eligible tabs only after the AI returns a usable plan. */
+async function ungroupReorganizableTabs(snapshots, windowId, excludedDomains) {
+  const tabIdsByGroup = new Map();
+  for (const tab of snapshots.values()) {
+    if (!(tab.groupId >= 0)) continue;
+    if (!tabIdsByGroup.has(tab.groupId)) tabIdsByGroup.set(tab.groupId, []);
+    tabIdsByGroup.get(tab.groupId).push(tab.id);
+  }
+
+  for (const [groupId, tabIds] of tabIdsByGroup) {
+    const groupTabs = await chrome.tabs.query({ groupId });
+    if (groupTabs.some(isInSplitView)) continue;
+    const unchanged = await filterUnchangedTabIds(tabIds, snapshots, windowId, excludedDomains);
+    if (!unchanged.length) continue;
+    await chrome.tabs.ungroup(unchanged);
+    for (const id of unchanged) {
+      snapshots.set(id, { ...snapshots.get(id), groupId: -1 });
+    }
+  }
 }
 
 // Get all tabs with their URLs loaded (handles suspended tabs)
@@ -2938,7 +2944,7 @@ IMPORTANT: Only assign tabs from the numbered list above. Tabs already in existi
  * Build the refine prompt: grouped tabs are listed with their current group so the model
  * can keep correct members in place and move only tabs that clearly belong elsewhere.
  */
-function buildRefinePrompt(tabs, customInstructions, existingGroups = null, minGroupSize = 1, includeExample = true) {
+function buildRefinePrompt(tabs, customInstructions, existingGroups, minGroupSize, { includeExample, partialBatch }) {
   const tabList = tabs.map((tab, index) => {
     const title = (tab.title || 'Untitled').replace(/"/g, "'");
     const url = tab.url || '';
@@ -2968,8 +2974,8 @@ IMPORTANT RULES:
 - Move a grouped tab only when it clearly belongs to another existing group or to a clearly better new group. Put a grouped tab that fits no group in "Misc".
 - Ungrouped tabs may join an existing group, form a new group, or go to "Misc".
 - To use an existing group, repeat its EXACT name. Never rename existing groups.
-- A new group other than "Misc" must contain MORE than ${threshold} tab(s).
-- Assign tabs that would form a smaller new group to "Misc". The browser leaves a lone tab where it is if there is no existing "Misc" group.
+${partialBatch ? BATCH_TOPIC_RULE : `- A new group other than "Misc" must contain MORE than ${threshold} tab(s).
+- Assign tabs that would form a smaller new group to "Misc". The browser leaves a lone tab where it is if there is no existing "Misc" group.`}
 - NEVER assign tabs to groups named "BOOKMARKS" or "PRs".
 - Pinned and split-view tabs are never included in this list. Do not reference or create groups for them.
 
@@ -2980,11 +2986,15 @@ Return ONLY a JSON array of objects (no markdown, no prose, no domain shorthand 
 
 const TAB_GROUPS_EXAMPLE = ` Example:
 [{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
+const BATCH_TOPIC_RULE = '- Name each topic, including topics with only one tab in this batch. The browser combines matching topics before applying the minimum group size.';
 
 /** Build the tab-categorization prompt shared by every AI provider. */
-function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, minGroupSize = 1, includeExample = true) {
+function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, minGroupSize = 1, {
+  includeExample = true,
+  partialBatch = false,
+} = {}) {
   if (tabs.some(tab => typeof tab.currentGroup === 'string')) {
-    return buildRefinePrompt(tabs, customInstructions, existingGroups, minGroupSize, includeExample);
+    return buildRefinePrompt(tabs, customInstructions, existingGroups, minGroupSize, { includeExample, partialBatch });
   }
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
@@ -3004,8 +3014,8 @@ ${tabList}`;
 
   const threshold = Math.max(1, minGroupSize);
   basePrompt += `\n\nIMPORTANT RULES:
-- New groups other than "Misc" must contain MORE than ${threshold} tab(s).
-- Assign tabs that don't fit or would form a smaller group to "Misc". The browser leaves a lone tab ungrouped if there is no existing "Misc" group to merge into.
+${partialBatch ? BATCH_TOPIC_RULE : `- New groups other than "Misc" must contain MORE than ${threshold} tab(s).
+- Assign tabs that don't fit or would form a smaller group to "Misc". The browser leaves a lone tab ungrouped if there is no existing "Misc" group to merge into.`}
 - NEVER add or remove any tabs to groups named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
 - Pinned and split-view tabs are never included in this list. Do not reference or create groups for them.
 
@@ -3013,7 +3023,10 @@ ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
 Return ONLY a JSON array of objects (no markdown, no prose, no domain shorthand like [domain.com]). Each object must have "groupName" (string) and "tabIndices" (array of numbers).`;
 
-  return basePrompt + (includeExample ? TAB_GROUPS_EXAMPLE : '\nUse only listed tab indices. Group tabs that share a topic. Use "Misc" for the rest.');
+  if (includeExample) return basePrompt + TAB_GROUPS_EXAMPLE;
+  return basePrompt + (partialBatch
+    ? '\nInclude only listed tab indices.'
+    : '\nUse only listed tab indices. Group tabs that share a topic. Use "Misc" for the rest.');
 }
 
 function takeSseLine(buffer, atEnd) {
@@ -3091,16 +3104,19 @@ async function readOpenAiCompatibleChatResponse(response) {
   if (!contentType.includes('text/event-stream')) {
     const data = await response.json();
     if (data.error) throw new Error(extractProviderErrorMessage(data) || 'The AI provider returned an error.');
-    return openAiCompatibleContentText(data.choices?.[0]?.message?.content).trim();
+    const choice = data.choices?.[0];
+    return { content: openAiCompatibleContentText(choice?.message?.content).trim(), finishReason: choice?.finish_reason };
   }
 
   let content = '';
+  let finishReason;
   await readSseJsonEvents(response, event => {
     if (event.error) throw new Error(extractProviderErrorMessage(event) || 'The AI provider returned an error.');
     const choice = event.choices?.[0];
     content += openAiCompatibleContentText(choice?.delta?.content ?? choice?.message?.content);
+    finishReason = choice?.finish_reason ?? finishReason;
   });
-  return content.trim();
+  return { content: content.trim(), finishReason };
 }
 
 async function readClaudeMessageResponse(response) {
@@ -3187,7 +3203,7 @@ async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroup
     throw new AiProviderError({ provider: 'openai', status: response.status, message, rawBody: errorBody });
   }
 
-  const content = await readOpenAiCompatibleChatResponse(response);
+  const { content } = await readOpenAiCompatibleChatResponse(response);
   if (!content) {
     throw new AiProviderError({ provider: 'openai', message: `OpenAI returned no content (model=${resolvedModel}).` });
   }
@@ -3619,67 +3635,151 @@ async function localContextWindow(baseUrl, model) {
   }
 }
 
+function localBatchBudget(contextWindow, prompt, tabCount, shortReply) {
+  const expectedReply = Math.min(5000, 128 + 24 * tabCount);
+  // Estimate input tokens and leave room for chat formatting and the stricter retry.
+  const inputBudget = Math.ceil(new TextEncoder().encode(prompt).length / 3) + 256;
+  const available = contextWindow ? contextWindow - inputBudget : 5000;
+  // A single tab cannot be split. Give it a usable reply budget and let the
+  // server check its actual prompt length instead of rejecting the estimate.
+  const replyRoom = tabCount === 1 ? Math.max(available, expectedReply) : available;
+  const outputLimit = Math.max(1, Math.min(5000, contextWindow ?? 5000, replyRoom));
+  const compactMaxTokens = Math.min(outputLimit, expectedReply);
+  return {
+    fits: available >= expectedReply,
+    maxTokens: shortReply ? compactMaxTokens : outputLimit,
+    compactMaxTokens,
+  };
+}
+
+function splitLocalBatch(pending, batch) {
+  const { start, tabs } = batch;
+  const middle = Math.ceil(tabs.length / 2);
+  pending.push(
+    { ...batch, start: start + middle, tabs: tabs.slice(middle) },
+    { ...batch, tabs: tabs.slice(0, middle) }
+  );
+}
+
+function recoverLocalBatch(pending, batch, error, { maxTokens, compactMaxTokens }) {
+  const inputRejected = isLocalModelInputSizeError(error);
+  if (!inputRejected && !(error instanceof LocalOutputLimitError)) throw error;
+
+  const retry = inputRejected ? { ...batch, compactReply: true } : batch;
+  if (batch.tabs.length > 1) {
+    splitLocalBatch(pending, retry);
+  } else if (inputRejected && maxTokens > compactMaxTokens) {
+    pending.push(retry);
+  } else {
+    throw error;
+  }
+}
+
+async function resolveLocalGroupingOptions(rawBaseUrl, model) {
+  const { baseUrl, isOmlx, model: defaultModel } = globalThis.resolveLocalModelSettings({ localBaseUrl: rawBaseUrl }, isFirefox);
+  requireAllowedLocalModelUrl(baseUrl);
+  await requireLocalModelHostPermission(baseUrl);
+  const useOmlxSchema = isFirefox && isOmlx;
+  return {
+    baseUrl,
+    useOmlxSchema,
+    shortReply: useOmlxSchema && model === defaultModel,
+    contextWindow: await localContextWindow(baseUrl, model) ?? (isOmlx ? 8192 : null),
+  };
+}
+
 /**
  * Call a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) to categorize tabs.
  * Streaming makes response headers arrive before Chrome's 30-second service-worker fetch limit.
  * Local models are less reliable at emitting bare JSON, so one stricter retry is attempted.
  */
 async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
-  const { baseUrl, isOmlx } = globalThis.resolveLocalModelSettings({ localBaseUrl: rawBaseUrl }, isFirefox);
-  requireAllowedLocalModelUrl(baseUrl);
-  await requireLocalModelHostPermission(baseUrl);
-  const useOmlxSchema = isFirefox && isOmlx;
-  const contextWindow = await localContextWindow(baseUrl, model) ?? (isOmlx ? 8192 : null);
+  const { baseUrl, useOmlxSchema, shortReply, contextWindow } = await resolveLocalGroupingOptions(rawBaseUrl, model);
   const deadline = Date.now() + OLLAMA_TIMEOUT_MS;
-  const makeRequest = batch => ({
-    model,
-    basePrompt: buildOrganizePrompt(batch, customInstructions, existingGroups, minGroupSize, !useOmlxSchema),
-    tabCount: batch.length,
-    useOmlxSchema,
-    existingGroups,
-    maxTokens: contextWindow || batch.length < tabs.length ? Math.min(5000, 128 + 24 * batch.length) : 5000,
-  });
   const pending = [{ start: 0, tabs }];
   const results = [];
-  const encoder = new TextEncoder();
   while (pending.length) {
     const batch = pending.pop();
-    const request = makeRequest(batch.tabs);
-    // Allow for tokenization differences, chat formatting, and the stricter retry.
-    const estimatedTokens = Math.ceil(encoder.encode(request.basePrompt).length / 3) + request.maxTokens + 256;
-    const canSplit = batch.tabs.length > 1;
-    const splitBatch = () => {
-      const middle = Math.ceil(batch.tabs.length / 2);
-      pending.push(
-        { start: batch.start + middle, tabs: batch.tabs.slice(middle) },
-        { start: batch.start, tabs: batch.tabs.slice(0, middle) });
-    };
-    if (canSplit && contextWindow && estimatedTokens > contextWindow) {
-      splitBatch();
+    const tabCount = batch.tabs.length;
+    const partialBatch = tabCount < tabs.length;
+    const basePrompt = buildOrganizePrompt(batch.tabs, customInstructions, existingGroups, minGroupSize, {
+      includeExample: !useOmlxSchema, partialBatch,
+    });
+    const budget = localBatchBudget(contextWindow, basePrompt, tabCount, shortReply || batch.compactReply);
+    if (tabCount > 1 && !budget.fits) {
+      splitLocalBatch(pending, batch);
       continue;
     }
-    let groups;
+
+    const schema = useOmlxSchema ? omlxTabGroupsSchema(tabCount, existingGroups) : null;
     try {
-      groups = await requestLocalModelGroups(baseUrl, request, deadline, batch.tabs.length !== tabs.length);
+      const groups = await requestLocalModelGroups(baseUrl, {
+        model, basePrompt, tabCount, start: batch.start, partialBatch, schema, maxTokens: budget.maxTokens,
+      }, deadline);
+      results.push(groups);
     } catch (error) {
-      if (!canSplit || !isLocalContextError(error)) throw error;
-      splitBatch();
-      continue;
+      recoverLocalBatch(pending, batch, error, budget);
     }
-    results.push(offsetGroupIndices(groups, batch.start, batch.tabs.length));
   }
   if (results.length === 1) return results[0];
   console.info(`[Smart Tab Organiser] Local model processed ${tabs.length} tabs in ${results.length} batches.`);
   return mergeGroupBatches(results);
 }
 
-function isLocalContextError(error) {
-  return error instanceof AiProviderError && [400, 413, 422].includes(error.status)
-    && /context.length|context.window|input.*(?:too long|token limit)|prompt.*(?:too long|token limit)/i.test(error.message);
+class LocalOutputLimitError extends Error {
+  constructor(maxTokens) {
+    super(`Local model response was cut off at its ${maxTokens}-token output limit.`);
+  }
 }
 
-async function requestLocalModelGroups(baseUrl, request, deadline, allowEmpty) {
-  const { model, basePrompt, tabCount, useOmlxSchema, existingGroups, maxTokens } = request;
+function isLocalModelInputSizeError(error) {
+  if (!(error instanceof AiProviderError)) return false;
+  if (error.status === 413) return true;
+  if (error.status === 500) return /^context size has been exceeded\.?$/i.test(error.message.trim());
+  if (![400, 422].includes(error.status)) return false;
+
+  const details = error.rawBody?.error ?? error.rawBody;
+  const contextCodes = ['context_length_exceeded', 'exceed_context_size_error'];
+  return contextCodes.includes(details?.code) || contextCodes.includes(details?.type)
+    || /context (?:length|window|size)|(?:input|prompt).*(?:too long|token limit)/i.test(error.message);
+}
+
+async function fetchLocalModelReply(baseUrl, { model, schema, maxTokens }, prompt, remainingMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remainingMs);
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      redirect: 'error',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        temperature: 0.2,
+        ...(schema ? { response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'tab_groups', schema, strict: true },
+        } } : {}),
+        stream: true,
+      }),
+    });
+    if (!response.ok) {
+      const errorBody = await readErrorResponseBody(response);
+      const message = extractProviderErrorMessage(errorBody) || `Local model server returned HTTP ${response.status}`;
+      throw new AiProviderError({ provider: 'local', status: response.status, message, rawBody: errorBody });
+    }
+    return await readOpenAiCompatibleChatResponse(response);
+  } catch (error) {
+    throw localServerError(error, baseUrl);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestLocalModelGroups(baseUrl, request, deadline) {
+  const { model, basePrompt, maxTokens } = request;
   const retryReminder = '\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON array: start with [ and end with ]. No explanation, no markdown code fences.';
 
   let lastError = null;
@@ -3690,65 +3790,28 @@ async function requestLocalModelGroups(baseUrl, request, deadline, allowEmpty) {
     if (remainingMs <= 0) {
       throw new Error(`Local model timed out after ${Math.round(OLLAMA_TIMEOUT_MS / 1000)}s. Try a smaller model, or organize fewer tabs.`);
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), remainingMs);
-
-    let content;
-    try {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        redirect: 'error',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: model,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: maxTokens,
-          temperature: 0.2,
-          ...(useOmlxSchema ? {
-            response_format: {
-              type: 'json_schema',
-              json_schema: { name: 'tab_groups', schema: omlxTabGroupsSchema(tabCount, existingGroups), strict: true },
-            },
-          } : {}),
-          stream: true
-        })
-      });
-
-      if (!response.ok) {
-        const errorBody = await readErrorResponseBody(response);
-        const message = extractProviderErrorMessage(errorBody) || `Local model server returned HTTP ${response.status}`;
-        console.error('[Smart Tab Organiser] Local model error:', response.status, message, errorBody);
-        throw new AiProviderError({
-          provider: 'local',
-          status: response.status,
-          message,
-          rawBody: errorBody,
-        });
-      }
-
-      content = await readOpenAiCompatibleChatResponse(response);
-    } catch (error) {
-      throw localServerError(error, baseUrl);
-    } finally {
-      clearTimeout(timer);
-    }
+    const { content, finishReason } = await fetchLocalModelReply(baseUrl, request, prompt, remainingMs);
+    if (finishReason === 'length') throw new LocalOutputLimitError(maxTokens);
 
     if (!content) {
       lastError = new Error(`No response from local model "${model}"`);
       continue;
     }
 
-    const groups = allowEmpty ? parseBatchAiGroupsResponse(content) : parseAiGroupsResponse(content);
-    if (!groups) {
-      console.warn('[Smart Tab Organiser] Local model returned invalid tab-group JSON.');
-      lastError = new Error(`Invalid response format from local model "${model}"`);
-      continue;
-    }
-    return groups;
+    const groups = parseLocalBatchGroups(content, request);
+    if (groups) return groups;
+    console.warn('[Smart Tab Organiser] Local model returned invalid tab-group JSON.');
+    lastError = new Error(`Invalid response format from local model "${model}"`);
   }
 
-  throw lastError || new Error('Local model produced no usable response');
+  throw lastError;
+}
+
+function parseLocalBatchGroups(content, { partialBatch, start, tabCount }) {
+  const parsed = partialBatch ? parseBatchAiGroupsResponse(content, { salvageMalformedGroups: true }) : parseAiGroupsResponse(content);
+  if (!parsed) return null;
+  const groups = offsetGroupIndices(parsed, start, tabCount);
+  return parsed.length && !groups.length ? null : groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -3883,7 +3946,7 @@ async function callCustomOpenAI(rawBaseUrl, apiKey, model, tabs, customInstructi
         console.error('[Smart Tab Organiser] OpenAI-compatible host error:', response.status, message, errorBody);
         throw new AiProviderError({ provider: 'custom-openai', status: response.status, message, rawBody: errorBody });
       }
-      content = await readOpenAiCompatibleChatResponse(response);
+      ({ content } = await readOpenAiCompatibleChatResponse(response));
     } catch (error) {
       if (error.name === 'AbortError') {
         throw new AiProviderError({
@@ -4001,11 +4064,11 @@ async function createChromeAiSession() {
 }
 
 /**
- * Marks a Chrome AI result that parsed successfully but contains no usable groups.
+ * Marks a batch result that parsed successfully but contains no groups.
  * organizeTabs() rejects empty provider results in general, so this lets a valid empty
  * on-device response fall through to the remaining-tabs-to-Misc path instead.
  */
-const CHROME_AI_EMPTY_RESULT = Symbol('chromeAiEmptyResult');
+const VALID_EMPTY_GROUPS = Symbol('validEmptyGroups');
 
 /** Merge per-batch group lists into one, combining groups that share a name. */
 function mergeGroupBatches(batches) {
@@ -4024,7 +4087,13 @@ function mergeGroupBatches(batches) {
       }
     }
   }
-  return Array.from(merged.values());
+  // Keep catch-all assignments behind topic groups, even if only a later
+  // batch introduces a topic that also appears in Misc.
+  const misc = merged.get('misc');
+  merged.delete('misc');
+  const groups = misc ? [...merged.values(), misc] : [...merged.values()];
+  if (groups.length === 0) Object.defineProperty(groups, VALID_EMPTY_GROUPS, { value: true });
+  return groups;
 }
 
 function offsetGroupIndices(groups, start, size) {
@@ -4037,11 +4106,11 @@ function offsetGroupIndices(groups, start, size) {
 }
 
 /**
- * Parse a Chrome AI batch response. With `responseConstraint`, Gemini Nano can return an
+ * Parse a batch response. A constrained model can return an
  * empty array or groups without usable indices; the shared parser rejects the whole
  * response in those cases, so keep the valid groups and drop only the empty ones.
  */
-function parseBatchAiGroupsResponse(content) {
+function parseBatchAiGroupsResponse(content, { salvageMalformedGroups = false } = {}) {
   const text = (content || '').trim();
   let parsed;
   try {
@@ -4060,11 +4129,13 @@ function parseBatchAiGroupsResponse(content) {
     group.groupName.trim() &&
     Array.isArray(group.tabIndices)
   )) {
+    return salvageMalformedGroups ? parseAiGroupsResponse(text) : null;
+  }
+  const groups = normalizeAiGroupsArray(parsed);
+  if (salvageMalformedGroups && groups.length === 0 && parsed.some(group => group.tabIndices.length > 0)) {
     return null;
   }
-  return parsed
-    .map(group => ({ groupName: group.groupName, tabIndices: normalizeTabIndices(group.tabIndices) }))
-    .filter(group => group.groupName.trim() && group.tabIndices.length > 0);
+  return groups;
 }
 
 /**
@@ -4103,14 +4174,7 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, min
     results.push(offsetGroupIndices(groups, batch.start, batch.tabs.length));
   }
 
-  const merged = mergeGroupBatches(results);
-  // A response with no usable groups in any batch is valid, not a parse failure:
-  // every batch parsed and simply assigned nothing. Mark it so organizeTabs() lets
-  // those tabs take the existing remaining-tabs path into Misc.
-  if (merged.length === 0) {
-    Object.defineProperty(merged, CHROME_AI_EMPTY_RESULT, { value: true });
-  }
-  return merged;
+  return mergeGroupBatches(results);
 }
 // Organize tabs using AI
 function tabTitleForSort(tab) {
@@ -4659,20 +4723,6 @@ async function organizeTabs(
       }
     }
 
-    // Ungroup tabs in any group that is not preserved (so they go through AI again)
-    for (const group of allGroups) {
-      if (refine) break;
-      if (preservedGroupIds.has(group.id)) continue;
-      const groupTabs = await chrome.tabs.query({ groupId: group.id });
-      if (groupTabs.some((t) => isInSplitView(t))) continue;
-      const liveIds = await filterExistingTabIds(
-        groupTabs.filter((t) => !isExcludedTab(t, excludedDomains)).map((t) => t.id)
-      );
-      if (liveIds.length > 0) {
-        await chrome.tabs.ungroup(liveIds);
-      }
-    }
-
     // Shared eligibility rule for the numbered list and for existing-group samples.
     const aiEligibility = {
       excludedDomains,
@@ -4706,13 +4756,10 @@ async function organizeTabs(
       color: group.color,
     }]));
 
-    // Re-query after ungrouping so tab.groupId is up to date (with URLs for suspended tabs)
-    const validTabsAfterUngroup = await getOrganizableTabs(windowId);
-
     // Never send pinned tabs or tabs in extension-managed groups to AI.
     // When preserving or merging, skip tabs already in a preserved group (prompt lists those separately).
     // When not preserving, every other organizable tab is eligible.
-    const tabsForAI = validTabsAfterUngroup.filter((tab) => {
+    const tabsForAI = tabs.filter((tab) => {
       if (!isTabEligibleForAi(tab, aiEligibility)) return false;
       if (refine) {
         // Unnamed groups cannot be referenced by name, so their tabs stay put.
@@ -4754,12 +4801,7 @@ async function organizeTabs(
     for (const provider of usableChain) {
       try {
         const result = await callProvider(provider, settings, promptTabs, instructions, existingGroupsForAI, minTabs);
-        // Chrome AI may legitimately return no groups (an empty array, or only empty groups)
-        // when Gemini Nano finds nothing worth grouping. callChromeAI() marks that valid
-        // empty result; a genuine parse failure still throws there. Every tab it did not
-        // assign falls through to the remaining-tab path below and is placed in Misc.
-        const validEmptyChromeAiResult = Array.isArray(result) && result[CHROME_AI_EMPTY_RESULT] === true;
-        if (!Array.isArray(result) || (result.length === 0 && !validEmptyChromeAiResult)) {
+        if (!Array.isArray(result) || (result.length === 0 && result[VALID_EMPTY_GROUPS] !== true)) {
           throw new AiProviderError({ provider, message: `Invalid response from ${providerLabel(provider)}: expected array of groups` });
         }
         groups = result;
@@ -4868,6 +4910,7 @@ async function organizeTabs(
 
     // Skip tabs that moved or changed while an AI provider processed the request.
     const currentWindowId = validTabs[0].windowId;
+    await ungroupReorganizableTabs(tabsForAISnapshots, currentWindowId, excludedDomains);
     const currentWindowTabIds = new Set(await filterUnchangedTabIds(
       tabsForAI.map(tab => tab.id),
       tabsForAISnapshots,

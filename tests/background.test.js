@@ -2332,6 +2332,155 @@ test('local model splits a rejected prompt when the server omits its context lim
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ groupName: 'Project', tabIndices: [3, 4] }]);
 });
 
+test('local batching handles common context rejection responses and salvages usable groups', async (t) => {
+  const rejections = [
+    [400, { error: { type: 'exceed_context_size_error', message: 'Request exceeds the available context size (4096 tokens)' } }],
+    [500, { error: { type: 'server_error', message: 'Context size has been exceeded.' } }],
+    [413, 'Payload Too Large'],
+  ];
+  for (const [status, body] of rejections) {
+    await t.test(`HTTP ${status}`, async () => {
+      const { context } = loadBackground();
+      const tabs = [
+        { title: 'Doc one', url: 'https://example.com/one' },
+        { title: 'Doc two', url: 'https://example.com/two' },
+      ];
+      let completions = 0;
+      context.fetch = async url => {
+        if (url.endsWith('/models')) return { ok: false, status: 404 };
+        if (++completions === 1) return { ok: false, status, text: async () => JSON.stringify(body) };
+        const content = '[{"groupName":"Docs","tabIndices":[1]},{"groupName":"Incomplete"}]';
+        return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+      };
+
+      const result = await context.callLocalModel('http://localhost:11434/v1', 'test-model', tabs, '');
+
+      assert.equal(completions, 3);
+      assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+    });
+  }
+});
+
+test('a local reasoning model retains output capacity when it fits the advertised context', async () => {
+  const { context } = loadBackground('moz-extension://test');
+  const tabs = [
+    { title: 'Doc one', url: 'https://example.com/one' },
+    { title: 'Doc two', url: 'https://example.com/two' },
+  ];
+  const budgets = [];
+  context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: true, json: async () => ({ data: [
+      { id: 'local-reasoning-model', max_model_len: 32768 },
+    ] }) };
+    const budget = JSON.parse(options.body).max_tokens;
+    budgets.push(budget);
+    const choice = budget < 300
+      ? { message: { content: '' }, finish_reason: 'length' }
+      : { message: { content: '[{"groupName":"Docs","tabIndices":[1,2]}]' }, finish_reason: 'stop' };
+    return { ok: true, json: async () => ({ choices: [choice] }) };
+  };
+
+  const result = await context.callLocalModel('http://localhost:11434/v1', 'local-reasoning-model', tabs, '');
+
+  assert.deepEqual(budgets, [5000]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+});
+
+for (const count of [1, 2]) {
+  test(`a size rejection reduces the output budget for ${count} tab(s) when the server has no model limit metadata`, async () => {
+    const { context } = loadBackground();
+    const tabs = ['Doc one', 'Doc two'].slice(0, count).map(title => ({ title, url: 'https://example.com/' }));
+    const budgets = [];
+    context.fetch = async (url, options) => {
+      if (url.endsWith('/models')) return { ok: false, status: 404 };
+      const body = JSON.parse(options.body);
+      budgets.push(body.max_tokens);
+      if (400 + body.max_tokens > 4096) {
+        return { ok: false, status: 400, text: async () => '{"error":{"code":"context_length_exceeded","message":"Maximum context length exceeded"}}' };
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: {
+        content: '[{"groupName":"Docs","tabIndices":[1]}]',
+      } }] }) };
+    };
+
+    const result = await context.callLocalModel('http://localhost:11434/v1', 'test-model', tabs, '');
+
+    assert.equal(budgets[0], 5000);
+    assert.equal(budgets.length, count + 1);
+    assert.ok(budgets.slice(1).every(budget => budget + 400 <= 4096));
+    assert.deepEqual(Array.from(result[0].tabIndices), count === 1 ? [1] : [1, 2]);
+  });
+}
+
+for (const streamed of [false, true]) {
+  test(`a truncated ${streamed ? 'streaming' : 'JSON'} local reply splits the batch even if the partial JSON parses`, async () => {
+    const { context } = loadBackground('moz-extension://test');
+    const model = 'Qwen2.5-Coder-1.5B-4bit';
+    const tabs = [
+      { title: 'Doc one', url: 'https://example.com/one' },
+      { title: 'Doc two', url: 'https://example.com/two' },
+    ];
+    const submittedSizes = [];
+    context.fetch = async (url, options) => {
+      if (url.endsWith('/models')) {
+        return { ok: true, json: async () => ({ data: [{ id: model, max_model_len: 16384 }] }) };
+      }
+      const size = JSON.parse(options.body).response_format.json_schema.schema.maxItems;
+      submittedSizes.push(size);
+      const finishReason = size > 1 ? 'length' : 'stop';
+      const content = size > 1
+        ? '[{"groupName":"Partial","tabIndices":[1]}]'
+        : '[{"groupName":"Docs","tabIndices":[1]}]';
+      if (!streamed) return { ok: true, json: async () => ({ choices: [{ message: { content }, finish_reason: finishReason }] }) };
+      return makeSseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ]);
+    };
+
+    const groups = await context.callLocalModel('http://127.0.0.1:8000/v1', model, tabs, '');
+
+    assert.deepEqual(submittedSizes, [2, 1, 1]);
+    assert.deepEqual(JSON.parse(JSON.stringify(groups)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+  });
+}
+
+test('a tight context estimate still allows a usable reply for a single local tab', async () => {
+  const { context } = loadBackground('moz-extension://test');
+  const model = 'Qwen2.5-Coder-1.5B-4bit';
+  context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) {
+      return { ok: true, json: async () => ({ data: [{ id: model, max_model_len: 512 }] }) };
+    }
+    const budget = JSON.parse(options.body).max_tokens;
+    const choice = budget < 32
+      ? { message: { content: '[' }, finish_reason: 'length' }
+      : { message: { content: '[{"groupName":"Gardening","tabIndices":[1]}]' }, finish_reason: 'stop' };
+    return { ok: true, json: async () => ({ choices: [choice] }) };
+  };
+  const tabs = [{ title: 'Orchid care', url: 'https://example.com/orchids' }];
+
+  const groups = await context.callLocalModel('http://127.0.0.1:8000/v1', model, tabs, '');
+
+  assert.deepEqual(JSON.parse(JSON.stringify(groups)), [{ groupName: 'Gardening', tabIndices: [1] }]);
+});
+
+test('an unsplittable local reply reports its output limit without retrying the same request', async () => {
+  const { context } = loadBackground('moz-extension://test');
+  let completions = 0;
+  context.fetch = async url => {
+    if (url.endsWith('/models')) return { ok: false, status: 404 };
+    completions++;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '[{' }, finish_reason: 'length' }] }) };
+  };
+  const tabs = [{ title: 'Doc', url: 'https://example.com/one' }];
+
+  await assert.rejects(context.callLocalModel('http://127.0.0.1:8000/v1', 'Qwen2.5-Coder-1.5B-4bit', tabs, ''),
+    /response was cut off/i);
+  assert.equal(completions, 1);
+});
+
 test('auto-organize does nothing when the setting was never enabled', async () => {
   const world = setupAutoOrganize({});
   await world.chrome.tabs.onCreated.emit({ id: 11, windowId: 1 });
@@ -2536,6 +2685,158 @@ function setupOrganizeWorld({ settings, tabs, groups }) {
 function makeTab(id, groupId, title, url, extra = {}) {
   return { id, windowId: 1, index: id, title, url, groupId, pinned: false, splitViewId: -1, ...extra };
 }
+
+test('later local batches keep named groups when the model also assigns those tabs to Misc', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'local', localModel: 'test-model' },
+    tabs: ['Docs one', 'Docs two', 'Recipe one', 'Recipe two'].map((title, index) =>
+      makeTab(index + 1, -1, title, `https://example.com/${index}`)
+    ),
+    groups: [],
+  });
+  const batchResponses = [
+    [{ groupName: 'Docs', tabIndices: [1, 2] }, { groupName: 'Misc', tabIndices: [1] }],
+    [{ groupName: 'Recipes', tabIndices: [1, 2] }, { groupName: 'Misc', tabIndices: [1, 2] }],
+  ];
+  world.context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: false, status: 404 };
+    const prompt = JSON.parse(options.body).messages[0].content;
+    if (prompt.includes('Docs one') && prompt.includes('Recipe one')) {
+      return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+    }
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify(batchResponses.shift()) } }] }),
+    };
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.groupedCount, 4);
+  assert.deepEqual(world.groups.map(group => group.title), ['Docs', 'Recipes']);
+  assert.deepEqual(world.calls.group.map(call => call.tabIds), [[1, 2], [3, 4]]);
+});
+
+test('a failed final local batch leaves the original tab groups intact', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'local', localModel: 'test-model' },
+    tabs: ['Docs one', 'Docs two', 'Recipe one', 'Recipe two'].map((title, index) =>
+      makeTab(index + 1, index < 2 ? 10 : -1, title, `https://example.com/${index}`)
+    ),
+    groups: [{ id: 10, title: 'Existing docs', color: 'blue' }],
+  });
+  world.context.fetch = async (url, options) => {
+    if (url.endsWith('/models')) return { ok: false, status: 404 };
+    const prompt = JSON.parse(options.body).messages[0].content;
+    if (!prompt.includes('Recipe one')) {
+      return { ok: true, json: async () => ({ choices: [{ message: {
+        content: '[{"groupName":"Docs","tabIndices":[1,2]}]',
+      } }] }) };
+    }
+    if (prompt.includes('Docs one')) {
+      return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+    }
+    return { ok: false, status: 503, text: async () => '{"error":{"message":"Local model busy"}}' };
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+  assert.equal(result.success, false);
+  assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 10, -1, -1]);
+  assert.deepEqual(world.calls.ungroup, []);
+  assert.deepEqual(world.calls.group, []);
+});
+
+for (const refineExistingGroups of [false, true]) {
+  const mode = refineExistingGroups ? 'refining' : 'organizing';
+  test(`local batches preserve a topic with one tab per batch when ${mode}`, async () => {
+    const world = setupOrganizeWorld({
+      settings: { aiProvider: 'local', localModel: 'test-model', refineExistingGroups },
+      tabs: [
+        makeTab(1, -1, 'Orchid care', 'https://example.com/orchids'),
+        makeTab(2, -1, 'Rose care', 'https://example.com/roses'),
+      ],
+      groups: [],
+    });
+    world.context.fetch = async (url, options) => {
+      if (url.endsWith('/models')) return { ok: false, status: 404 };
+      const prompt = JSON.parse(options.body).messages[0].content;
+      if (prompt.includes('Orchid care') && prompt.includes('Rose care')) {
+        return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+      }
+      const name = prompt.includes('including topics with only one tab') ? 'Gardening' : 'Misc';
+      const content = JSON.stringify([{ groupName: name, tabIndices: [1] }]);
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    };
+
+    const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+    assert.equal(result.success, true);
+    assert.deepEqual(world.groups.map(group => group.title), ['Gardening']);
+    assert.deepEqual(world.calls.group.map(call => call.tabIds), [[1, 2]]);
+  });
+}
+
+test('all empty local batches leave the unmatched tabs for Misc without changing providers', async () => {
+  const world = setupOrganizeWorld({
+    settings: { aiProvider: 'local', localModel: 'test-model', aiFallbackEnabled: true, aiAllowCloudFallback: true },
+    tabs: [
+      makeTab(1, -1, 'Orchid care', 'https://example.com/orchids'),
+      makeTab(2, -1, 'Pasta recipe', 'https://example.com/pasta'),
+    ],
+    groups: [],
+  });
+  const answerHosts = [];
+  world.context.fetch = async (url, options) => {
+    const endpoint = new URL(url);
+    if (endpoint.pathname === '/v1/models') return { ok: false, status: 404 };
+    answerHosts.push(endpoint.hostname);
+    const prompt = JSON.parse(options.body).messages[0].content;
+    if (prompt.includes('Orchid care') && prompt.includes('Pasta recipe')) {
+      return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+    }
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '[]' } }] }) };
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+  assert.equal(result.success, true);
+  assert.equal(result.providerUsed, 'local');
+  assert.deepEqual(answerHosts, ['localhost', 'localhost', 'localhost']);
+  assert.deepEqual(world.groups.map(group => group.title), ['Misc']);
+  assert.deepEqual(world.calls.group.map(call => call.tabIds), [[1, 2]]);
+});
+
+test('nonempty local batches with no valid tab indices leave existing groups intact', async t => {
+  for (const invalidIndex of [0, 'bad', 99]) {
+    await t.test(`index ${invalidIndex}`, async () => {
+      const world = setupOrganizeWorld({
+        settings: { aiProvider: 'local', localModel: 'test-model' },
+        tabs: [
+          makeTab(1, 10, 'Orchid care', 'https://example.com/orchids'),
+          makeTab(2, 10, 'Pasta recipe', 'https://example.com/pasta'),
+        ],
+        groups: [{ id: 10, title: 'My tabs', color: 'blue' }],
+      });
+      world.context.fetch = async (url, options) => {
+        if (url.endsWith('/models')) return { ok: false, status: 404 };
+        const prompt = JSON.parse(options.body).messages[0].content;
+        if (prompt.includes('Orchid care') && prompt.includes('Pasta recipe')) {
+          return { ok: false, status: 400, text: async () => '{"error":{"message":"Prompt exceeds the context window"}}' };
+        }
+        const content = JSON.stringify([{ groupName: 'Misc', tabIndices: [invalidIndex] }]);
+        return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+      };
+
+      const result = await world.context.organizeTabs(false, false, '', 1, 1);
+
+      assert.equal(result.success, false);
+      assert.deepEqual(world.tabs.map(tab => tab.groupId), [10, 10]);
+      assert.deepEqual(world.calls.ungroup, []);
+    });
+  }
+});
 
 for (const refine of [false, true]) {
   const mode = refine ? 'refine' : 'organize';
